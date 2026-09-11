@@ -84,7 +84,7 @@ SPLIT    = "test"      # which partition to work on: "train" | "val" | "test" | 
 LIMIT    = None       # base dataset restriction, applied BEFORE splitting (None → use the
                       # run's own `limit`, required to reproduce ITS split exactly). Same
                       # syntax as before: int N, "n:m", or "n:m:step".
-SPLIT_LIMIT = 10   # further restriction WITHIN the chosen SPLIT (ignored if SPLIT="full").
+SPLIT_LIMIT = int(os.environ.get("SR_SPLIT_LIMIT", 10))   # restriction WITHIN SPLIT; env: SR_SPLIT_LIMIT
 
 # Which structure and which atom to resolve.
 MOL_IDX = 0      # index into the chosen split (not the raw dataset)
@@ -110,7 +110,7 @@ GUARD_WEIGHT = 200.0  # penalty = GUARD_WEIGHT · (MIN_DIST_GUARD + GUARD_MARGIN
 # Defaults to "model" on CSH: the self-consistency test (loss@true ≡ 0) must pass BEFORE a
 # DFT- or experiment-referenced result is worth interpreting, otherwise a failure cannot be
 # attributed between the optimiser, the landscape and model error.
-LOSS_TARGET = "dft"
+LOSS_TARGET = os.environ.get("SR_LOSS_TARGET", "dft")   # env override: SR_LOSS_TARGET=model
 
 # ── Spectrum ──────────────────────────────────────────────────────────────────
 # Which nuclei are fitted. Each is an INDEPENDENT experiment: one spectrum and one loss
@@ -119,7 +119,8 @@ LOSS_TARGET = "dft"
 # nucleus responds to where the Na sits, so each extra species buys equations. Adding "O"
 # is the most informative numerically and the least realistic physically (¹⁷O needs
 # enrichment). Species absent from a structure are skipped with a warning.
-SPECTRUM_SPECIES = ("Na",)
+SPECTRUM_SPECIES = (tuple(s for s in os.environ["SR_SPECIES"].split(",") if s)
+                    if os.environ.get("SR_SPECIES") else ("Na", "Si"))  # env: SR_SPECIES=Na,Si,O
 # Linewidth in ppm: a single float for all nuclei, or one value per species. ²³Na lines in
 # CSH are broad (quadrupolar, unmodelled here); ²⁹Si MAS lines are narrower.
 FWHM        = {"Na": 8.0, "Si": 3.0, "O": 8.0, "Ca": 8.0, "H": 2.0}
@@ -183,13 +184,13 @@ PRINT_EVALS  = True   # per-start progress. With a vmapped multistart this is a 
 # constant size in Å³ (a property of the model, not of the cell). N_STARTS is DERIVED per
 # structure from spacing and cell volume, and reported. Tune the spacing from the per-start
 # hit rate STEP 6 measures, exactly as N_STARTS was tuned on QM9.
-START_SPACING = 2.5   # Å — target spacing of the grid before clash rejection
+START_SPACING = float(os.environ.get("SR_SPACING", 2.5))   # Å — grid spacing; env: SR_SPACING=1.5
 MAX_STARTS    = 4096  # safety cap on the raw grid; a huge cell + tiny spacing is refused
 # How many starts are in flight at once. `vmap` replicates the model's activations per lane
 # and reverse-mode AD holds them for the backward pass, so memory grows with lanes × atoms;
 # a bulk CSH cell has far more atoms than a QM9 molecule, so keep this modest. Every full
 # batch shares one compilation, so batching costs nothing but bounds the footprint.
-STARTS_PER_BATCH = 8
+STARTS_PER_BATCH = int(os.environ.get("SR_BATCH", 8))   # lanes per vmap batch; env: SR_BATCH=4 if OOM
 # Each start relaxes only within LOCAL_CAP of itself: u is mapped to
 # pos_k = start + R·tanh((u − start)/R), so |pos_k − start| < R for any u. To tile the cell
 # with no gaps this must be at least the grid spacing; too large and distant starts collapse
@@ -231,14 +232,14 @@ NEIGHBOUR_CAPACITY = None
 RELIABLE_LOSS_TOL = 2.0
 
 # Step 6 – statistics loop
-RUN_STATS      = False  # set False to skip the multi-molecule statistics loop
-N_MOL_STAT     = 10     # how many molecules to include (ignored if RUN_STATS=False)
+RUN_STATS      = os.environ.get("SR_RUN_STATS") is not None  # env: SR_RUN_STATS=1 enables STEP 6
+N_MOL_STAT     = int(os.environ.get("SR_N_MOL", 10))          # how many molecules (env: SR_N_MOL)
 N_ATOM_STAT    = 1      # atoms per molecule
 DIST_THRESHOLD = 0.2    # Å – "success" criterion
 
 # Output
 SAVE_CSV        = True   # write per-start + per-cluster CSVs
-SAVE_GIF        = True    # animate the descent paths of the best starts (3-D)
+SAVE_GIF        = os.environ.get("SR_NO_GIF") is None   # animate best descent paths; SR_NO_GIF=1 skips
 SAVE_SPECTRA_CSV = True  # write the target vs best-cluster spectra as columns
 GIF_TOP_N       = 8      # how many of the lowest-final-loss paths to animate
 GIF_MAX_FRAMES  = 120    # subsample trajectory to at most this many animation frames
@@ -251,6 +252,8 @@ RESULTS_DIR = os.path.join(OUT_DIR, "results", RUN_ID)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 PLOT_PATH            = os.path.join(RESULTS_DIR, "structure_resolution_result.png")
+PLOT_3D_PATH         = os.path.join(RESULTS_DIR, "structure_resolution_3d.png")
+PLOT_SPECTRA_PATH    = os.path.join(RESULTS_DIR, "structure_resolution_spectra.png")
 CSV_TRAJ_PATH        = os.path.join(RESULTS_DIR, "structure_resolution_trajectory.csv")
 CSV_SUMMARY_PATH     = os.path.join(RESULTS_DIR, "structure_resolution_summary.csv")
 GIF_PATH             = os.path.join(RESULTS_DIR, "structure_resolution.gif")
@@ -501,6 +504,36 @@ def sensitivity_scores(module, params, to_graph, atoms_base, atom_k, specs, delt
     return {sym: float(np.mean(v)) for sym, v in acc.items()}
 
 
+def sensitivity_all_species(atoms_base, atom_k, delta=0.15):
+    """Which nuclei FEEL atom k move — S for EVERY species present, not just the fitted ones.
+
+    Same central-FD probe as `sensitivity_scores` (±x,±y,±z of atom k, 6 forward passes) but
+    scored over all species in the structure, so it answers "if I displace the Na, whose
+    spectra shift the most?" — the prior for choosing which nuclei to fit alongside it.
+    Returns list of (symbol, S, n_sites) sorted by S descending (atom k's own species first
+    only if it wins on its own merit). Validation-side only (needs the model).
+    """
+    pos0 = np.asarray(atoms_base.positions, dtype=float)
+    syms = np.array(atoms_base.get_chemical_symbols())
+    def iso(pos):
+        a = atoms_base.copy(); a.positions = pos
+        t = np.asarray(predictor(a))
+        return np.trace(t, axis1=1, axis2=2) / 3.0
+    uniq = list(dict.fromkeys(syms.tolist()))
+    acc = {s: [] for s in uniq}
+    iso0 = iso(pos0)
+    for ax in range(3):
+        for sgn in (+1.0, -1.0):
+            p = pos0.copy(); p[atom_k, ax] += sgn * delta
+            d = np.abs(iso(p) - iso0)
+            for s in uniq:
+                m = syms == s
+                acc[s].append(float(d[m].mean()))
+    out = [(s, float(np.mean(v)), int((syms == s).sum())) for s, v in acc.items()]
+    out.sort(key=lambda t: t[1], reverse=True)
+    return out
+
+
 # ── STEP 0: Load model ─────────────────────────────────────────────────────────
 
 if not os.path.isdir(RUN_DIR):
@@ -601,6 +634,14 @@ for s in specs:
     print(f"    {s.symbol:>2}: I={ip['info']:6.2f}  (dispersion {ip['dispersion']:6.2f} ppm, "
           f"{ip['n_peaks']} resolved peak(s))   sensitivity S={_sens[s.symbol]:5.2f} ppm/0.15Å")
 print(f"    total I = {_info_total:.2f}  (higher ⇒ the spectrum set should pin atom k better)")
+
+# All-species sensitivity scan: whose spectra respond most to atom k moving (independent of
+# what we chose to fit) — the prior for which nuclei to add alongside atom k's own species.
+print(f"  sensitivity scan — |Δσ_iso| per 0.15 Å of atom {atom_k} "
+      f"({atoms_orig.get_chemical_symbols()[atom_k]}) displacement, all species:")
+for _sym, _S, _n in sensitivity_all_species(atoms_orig, atom_k):
+    _mark = "  ← target atom's species" if _sym == atoms_orig.get_chemical_symbols()[atom_k] else ""
+    print(f"    {_sym:>2}: S={_S:6.3f} ppm/0.15Å  over {_n:2d} site(s){_mark}")
 
 # ── STEP 2: The search cell (no perturbation, no positional prior) ─────────────
 # Grid search does not move the atom away from a known truth — it forgets the truth
@@ -885,7 +926,11 @@ bundle = dict(
 sr_viz.save_bundle(RESULTS_DIR, bundle)
 print(f"  Plot bundle saved to {os.path.join(RESULTS_DIR, sr_viz.DATA_NAME)}")
 sr_viz.grid_result_figure(bundle, PLOT_PATH)
-print(f"  Plot saved to {PLOT_PATH}")
+sr_viz.grid_3d_figure(bundle, PLOT_3D_PATH)
+sr_viz.grid_spectra_figure(bundle, PLOT_SPECTRA_PATH)
+print(f"  Plots saved: {PLOT_PATH}")
+print(f"               {PLOT_3D_PATH}  (3-D only)")
+print(f"               {PLOT_SPECTRA_PATH}  (spectra only)")
 
 # ── CSV ───────────────────────────────────────────────────────────────────────
 if SAVE_CSV:
@@ -940,16 +985,29 @@ else:
     print(f"  N_MOL_STAT={N_MOL_STAT}  N_ATOM_STAT={N_ATOM_STAT}  ATOM_K={ATOM_K!r}  "
           f"spacing={START_SPACING} Å  DIST_THRESHOLD={DIST_THRESHOLD} Å\n")
 
-    #   resolved = |Δr(best cluster, true)| < DIST_THRESHOLD   (needs ground truth)
-    #   reliable = resolved AND loss < RELIABLE_LOSS_TOL       (observable-only proxy)
-    # loss_true and hits need ground truth and only serve to separate a SEARCH failure
-    # (loss still above the one at the true site — denser sampling helps) from a MODEL limit
-    # (loss at or below it — the model's minimum is misplaced). n_alt (rival clusters) is the
-    # same warning from observables alone, the one that carries over to a real refinement.
-    stats = dict(dist=[], loss=[], n_starts=[], hit_rate=[], resolved=0, reliable=0,
-                 total=0, model_limited=0, search_failed=0, info=[])
+    #   recovered = true site within DIST_THRESHOLD of ANY candidate (cluster ≤ DEGENERACY_TOL
+    #               above the best loss) — success on the observable, crediting legit degeneracy
+    #   k / multiplicity = size of that candidate set = the ambiguity a real run would report
+    #   best_on_truth = |Δr(best cluster, true)| < DIST_THRESHOLD — kept only as a diagnostic
+    # loss_true and hits need ground truth: loss_true separates a SEARCH failure (best loss still
+    # above the truth's — denser sampling / a polish helps) from a MODEL limit (best loss ≤ the
+    # truth's, so the model's own minimum is misplaced). In deployment only the absolute best
+    # loss and k are available; loss_true and |Δr| are validation-side.
+    # Success is defined on the OBSERVABLE, not on distance to the deposited atom. In a
+    # periodic solid a far minimum that reproduces the spectra equally well is a LEGITIMATE,
+    # spectrum-indistinguishable alternative (a symmetry-equivalent site or a genuine
+    # degeneracy) — not a failure. So per structure we report:
+    #   • best absolute loss              — deployment confidence (no ground truth needed)
+    #   • multiplicity k                  — # distinct clusters within DEGENERACY_TOL of the
+    #                                       best loss = the spectrum-consistent candidate set
+    #   • recovered (validation only)     — the true site is within DIST_THRESHOLD of ONE of
+    #                                       those k candidates (credits a legit degenerate)
+    # |Δr|(best, true) is kept only as a diagnostic, no longer the pass/fail.
+    stats = dict(dist=[], loss=[], n_starts=[], hit_rate=[], resolved=0, recovered=0,
+                 unique=0, total=0, model_limited=0, search_failed=0, info=[])
     stat_meta = dict(mol=[], atom=[], species=[], loss_true=[], hits=[], n_alt=[],
-                     n_clusters=[], info_total=[], sens_total=[])
+                     n_clusters=[], info_total=[], sens_total=[],
+                     k_mult=[], true_in_cand=[], min_cand_dist=[])
 
     stat_start = MOL_IDX + 1
     stat_end   = min(stat_start + N_MOL_STAT, len(structures))
@@ -982,11 +1040,26 @@ else:
             _sens_i = sensitivity_scores(module, params, to_graph, atoms_i, k_i, specs_i)
             _sens_tot_i = float(sum(_sens_i.values()))
 
-            res = grid_search(module, params, to_graph, atoms_i, k_i, specs_i,
-                              pos_i[k_i], cell_i)
-            dist_i = res["dist_to_true"]
-            loss_i = float(res["loss"])
+            try:
+                res = grid_search(module, params, to_graph, atoms_i, k_i, specs_i,
+                                  pos_i[k_i], cell_i)
+            except Exception as e:   # e.g. XLA OOM on an oversized cell — skip, keep the loop alive
+                print(f"  struct {mol_i:3d}: SKIPPED ({type(e).__name__}: {str(e)[:80]})")
+                continue
+            dist_i = res["dist_to_true"]               # |Δr|(best cluster, true) — diagnostic only
+            loss_i = float(res["loss"])                # best absolute loss — deployment confidence
             rate_i = res["hits"] / max(res["n_starts"], 1)
+
+            # Spectrum-consistent candidate set: every distinct cluster whose loss sits within
+            # DEGENERACY_TOL of the best. Its size k IS the ambiguity we would report in a real
+            # (geometry-blind) run. `recovered` = the true site is within DIST_THRESHOLD of ONE
+            # of those candidates — so a legit degenerate/symmetry-equivalent solution counts.
+            loss_band = loss_i * (1.0 + DEGENERACY_TOL)
+            cand = [c for c in res["clusters"] if float(c["loss"]) <= loss_band]
+            k_mult = len(cand)
+            cand_dists = [ss.mic_distance(c["centre"], pos_i[k_i], cell_i) for c in cand]
+            min_cand_dist = float(min(cand_dists)) if cand_dists else float("inf")
+            true_in_cand = min_cand_dist < DIST_THRESHOLD
 
             stat_meta["mol"].append(mol_i)
             stat_meta["atom"].append(k_i)
@@ -997,6 +1070,9 @@ else:
             stat_meta["n_clusters"].append(len(res["clusters"]))
             stat_meta["info_total"].append(_itot_i)
             stat_meta["sens_total"].append(_sens_tot_i)
+            stat_meta["k_mult"].append(k_mult)
+            stat_meta["true_in_cand"].append(true_in_cand)
+            stat_meta["min_cand_dist"].append(min_cand_dist)
             stats["dist"].append(dist_i)
             stats["loss"].append(loss_i)
             stats["n_starts"].append(res["n_starts"])
@@ -1004,44 +1080,54 @@ else:
             stats["info"].append(_itot_i)
             stats["total"] += 1
 
-            ok_dist = dist_i < DIST_THRESHOLD
-            ok_loss = loss_i < RELIABLE_LOSS_TOL
-            if ok_dist:
-                stats["resolved"] += 1
-            if ok_dist and ok_loss:
-                stats["reliable"] += 1
-            model_limited = (not ok_dist) and loss_i <= loss_true_i * (1.0 + DEGENERACY_TOL)
-            if not ok_dist:
-                stats["model_limited" if model_limited else "search_failed"] += 1
+            # Primary (observable) metric: recovered = truth among the candidate set.
+            if true_in_cand:
+                stats["recovered"] += 1
+                if k_mult == 1:
+                    stats["unique"] += 1            # recovered AND unambiguous (single candidate)
+            else:
+                # A real miss: the truth is not among the spectrum-consistent candidates. Split
+                # the cause — model limit (best already reproduces the spectra as well as the
+                # truth, so its minimum is genuinely misplaced) vs search (best still worse than
+                # the truth's loss → the good basin was never reached; denser starts / a polish).
+                if loss_i <= loss_true_i * (1.0 + DEGENERACY_TOL):
+                    stats["model_limited"] += 1
+                else:
+                    stats["search_failed"] += 1
+            if dist_i < DIST_THRESHOLD:
+                stats["resolved"] += 1              # diagnostic: best cluster itself is on the truth
 
-            if ok_dist and ok_loss:
-                flag = "✓ reliable"
-            elif ok_dist:
-                flag = "~ close"
-            elif model_limited:
+            if true_in_cand and k_mult == 1:
+                flag = "✓ recovered (unique)"
+            elif true_in_cand:
+                flag = f"✓ recovered (1 of {k_mult})"
+            elif loss_i <= loss_true_i * (1.0 + DEGENERACY_TOL):
                 flag = "✗ miss (model limit)"
             else:
                 flag = "✗ miss (search)"
             print(f"  struct {mol_i:3d}  atom {k_i:3d} ({stat_meta['species'][-1]}) → "
-                  f"|Δr|={dist_i:.3f} Å  loss={loss_i:.2f} (true {loss_true_i:.2f})  "
-                  f"I={_itot_i:5.2f} S={_sens_tot_i:4.2f}  "
-                  f"{res['hits']}/{res['n_starts']} on target, "
-                  f"{len(res['clusters'])} minima, {len(res['alternatives'])} rivals  {flag}")
+                  f"recovered={'Y' if true_in_cand else 'N'} k={k_mult}  "
+                  f"loss={loss_i:.2f} (true {loss_true_i:.2f})  "
+                  f"|Δr|best={dist_i:.2f} cand={min_cand_dist:.2f} Å  "
+                  f"I={_itot_i:4.1f} S={_sens_tot_i:4.2f}  {flag}")
 
     print("\n── Summary ──────────────────────────────────────────────────────────")
     if stats["total"] == 0:
         print("  no samples")
     else:
-        print(f"  resolved rate = {stats['resolved']}/{stats['total']} "
-              f"(|Δr| < {DIST_THRESHOLD} Å)")
-        print(f"  reliable rate = {stats['reliable']}/{stats['total']} "
-              f"(|Δr| < {DIST_THRESHOLD} Å AND loss < {RELIABLE_LOSS_TOL})")
-        print(f"  median |Δr| = {np.median(stats['dist']):.3f} Å  |  "
-              f"mean |Δr| = {np.mean(stats['dist']):.3f} Å  |  "
-              f"mean starts/structure = {np.mean(stats['n_starts']):.0f}")
+        # Primary (observable) metric: truth recovered among the spectrum-consistent candidates.
+        print(f"  RECOVERED rate = {stats['recovered']}/{stats['total']} "
+              f"(true site within {DIST_THRESHOLD} Å of a candidate ≤{100*DEGENERACY_TOL:.0f}% "
+              f"above the best loss)")
+        print(f"    of which unique (k=1) = {stats['unique']}/{stats['total']};  "
+              f"multiplicity k: median {np.median(stat_meta['k_mult']):.0f}, "
+              f"max {max(stat_meta['k_mult'])}")
+        print(f"  [diagnostic] best-cluster on truth = {stats['resolved']}/{stats['total']} "
+              f"(|Δr|(best,true) < {DIST_THRESHOLD} Å);  median |Δr|(best) = "
+              f"{np.median(stats['dist']):.3f} Å")
         # Two failure modes, opposite responses — never report them as one number.
-        print(f"  of the {stats['total'] - stats['resolved']} miss(es): "
-              f"{stats['search_failed']} search failure(s) → lower START_SPACING;  "
+        print(f"  of the {stats['total'] - stats['recovered']} miss(es): "
+              f"{stats['search_failed']} search failure(s) → lower START_SPACING / add a polish;  "
               f"{stats['model_limited']} model limit(s) → the model's minimum is misplaced, "
               f"only a better checkpoint helps.")
         # The per-start hit rate sets the spacing budget: with mean rate r and n starts,
@@ -1064,21 +1150,24 @@ else:
     if SAVE_CSV and stat_meta["mol"]:
         with open(STAT_CSV_PATH, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["case", "struct_idx", "atom_k", "species", "dist_ang", "loss",
-                        "loss_at_true", "info_total", "sensitivity_total", "n_starts",
+            w.writerow(["case", "struct_idx", "atom_k", "species", "loss", "loss_at_true",
+                        "multiplicity_k", "recovered", "unique", "min_cand_dist_ang",
+                        "dist_best_ang", "info_total", "sensitivity_total", "n_starts",
                         "starts_on_target", "n_clusters", "n_rival_clusters",
-                        "resolved", "reliable", "model_limited"])
+                        "best_on_truth", "model_limited"])
             for i in range(len(stat_meta["mol"])):
                 d = stats["dist"][i]; l = stats["loss"][i]; lt = stat_meta["loss_true"][i]
-                ok = d < DIST_THRESHOLD
+                rec = stat_meta["true_in_cand"][i]; k = stat_meta["k_mult"][i]
                 w.writerow([i, stat_meta["mol"][i], stat_meta["atom"][i],
-                            stat_meta["species"][i], f"{d:.6f}", f"{l:.8f}", f"{lt:.8f}",
+                            stat_meta["species"][i], f"{l:.8f}", f"{lt:.8f}", k,
+                            bool(rec), bool(rec and k == 1),
+                            f"{stat_meta['min_cand_dist'][i]:.6f}", f"{d:.6f}",
                             f"{stat_meta['info_total'][i]:.6f}",
                             f"{stat_meta['sens_total'][i]:.6f}",
                             stats["n_starts"][i], stat_meta["hits"][i],
                             stat_meta["n_clusters"][i], stat_meta["n_alt"][i],
-                            bool(ok), bool(ok and l < RELIABLE_LOSS_TOL),
-                            bool((not ok) and l <= lt * (1.0 + DEGENERACY_TOL))])
+                            bool(d < DIST_THRESHOLD),
+                            bool((not rec) and l <= lt * (1.0 + DEGENERACY_TOL))])
         print(f"  Statistics CSV saved to {STAT_CSV_PATH}")
 
 print(f"\nDone.")

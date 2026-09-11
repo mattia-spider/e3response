@@ -22,10 +22,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.animation import FuncAnimation, PillowWriter
 
-# CPK-ish colours/sizes by atomic number, shared by every panel that draws the framework.
-ATOM_COLOR = {1: "#E8E8E8", 6: "#909090", 7: "#3050F8", 8: "#FF2010",
-              11: "#AB5CF2", 14: "#F0C8A0", 20: "#3DFF00"}
-ATOM_SIZE = {1: 15, 6: 60, 7: 60, 8: 55, 11: 90, 14: 80, 20: 90}
+# One fixed, clearly-visible colour + size per species (by atomic number), shared by every
+# panel that draws the framework. Tuned for contrast on a white ground (H is a mid grey, not
+# near-white; Si a darker orange; Ca a medium green that won't clash with the true-site star).
+ATOM_COLOR = {1: "#9AA0A6", 6: "#505050", 7: "#3050F8", 8: "#E8483C",
+              11: "#9B59D0", 14: "#D98E32", 20: "#2CA02C"}
+ATOM_SIZE = {1: 20, 6: 60, 7: 60, 8: 52, 11: 95, 14: 82, 20: 95}
+ATOM_SYMBOL = {1: "H", 6: "C", 7: "N", 8: "O", 11: "Na", 14: "Si", 20: "Ca"}
 MODEL_COLOR = "royalblue"
 
 DATA_NAME = "plot_data.npz"
@@ -60,76 +63,123 @@ def load_bundle(results_dir) -> dict:
 
 # ── grid-search figures ──────────────────────────────────────────────────────────
 
-def grid_result_figure(b: dict, out_path, *, atom_color=None, atom_size=None,
-                       cand_cmap="viridis_r", framework_alpha=0.18, dpi=150):
-    """The grid-search result figure: 3-D candidate-site map + one spectrum panel per nucleus.
-
-    Bundle keys used:
+GRID_DOC = """Bundle keys used:
       framework_pos (n_atoms,3), framework_numbers (n_atoms,)  — the fixed framework
       pos_true (3,), atom_k (int)                              — validation-only truth marker
       cand_pos (N,3), cand_loss (N,)                           — every converged candidate
       cluster_centres (K,3)                                    — distinct minima (circled)
       spec_symbols (S,), spec_grid (S,G), spec_target (S,G),
       spec_best (S,G), spec_best_loss (S,)                     — target vs best-cluster spectra
-      metric, mol_idx, atom_symbol, target_label              — labels (json)
+      metric, mol_idx, atom_symbol, target_label              — labels (json)"""
+
+
+def _draw_grid_3d(ax, b, *, ac, asz, cand_cmap, framework_alpha, top_candidates):
+    """Draw the framework + the best `top_candidates` Na candidates into 3-D axes `ax`.
+
+    Framework: one FIXED colour per species (the fixed structure). Candidates: only the
+    `top_candidates` LOWEST-loss converged positions (plotting all of them is noise), in a
+    single sequential colour (dark = low loss = better) — the only varying colour, so it
+    can't be read as a second species scheme. True Na site = black star; distinct minima
+    circled. Returns the candidate scatter handle (for a colorbar) or None.
     """
-    ac = atom_color or ATOM_COLOR
-    asz = atom_size or ATOM_SIZE
+    fp = np.asarray(b["framework_pos"]); an = np.asarray(b["framework_numbers"]).astype(int)
+    for z in dict.fromkeys(an.tolist()):
+        m = an == z
+        ax.scatter(fp[m, 0], fp[m, 1], fp[m, 2], s=asz.get(z, 40),
+                   c=ac.get(z, "violet"), alpha=framework_alpha, depthshade=True,
+                   edgecolors="none", label=str(ATOM_SYMBOL.get(z, z)))
+    P = np.asarray(b["cand_pos"]); Lg = np.asarray(b["cand_loss"])
+    fin = np.where(np.isfinite(Lg))[0]
+    keep = fin[np.argsort(Lg[fin])[:top_candidates]] if top_candidates else fin  # best-N by loss
+    sc = None
+    if keep.size:
+        sc = ax.scatter(P[keep, 0], P[keep, 1], P[keep, 2], c=Lg[keep], s=70, cmap=cand_cmap,
+                        norm=mcolors.LogNorm(), edgecolors="k", linewidths=0.5, depthshade=False,
+                        zorder=6)
+    pos_true = np.asarray(b["pos_true"])
+    ax.scatter(*pos_true, s=340, marker="*", c="black", edgecolors="white", linewidths=0.9,
+               zorder=8, label="true Na site")
+    for j, c in enumerate(np.asarray(b["cluster_centres"])[:top_candidates or 5]):
+        ax.scatter(*c, s=170, marker="o", facecolors="none", edgecolors="red",
+                   linewidths=1.6, zorder=7, label="distinct minimum" if j == 0 else None)
+    ax.set_xlabel("x (Å)", fontsize=7); ax.set_ylabel("y (Å)", fontsize=7)
+    ax.set_zlabel("z (Å)", fontsize=7)
+    ax.set_title(f"framework (fixed colours) + best {int(keep.size)} Na candidates", fontsize=9)
+    ax.legend(fontsize=6, loc="upper left", ncol=2, framealpha=0.9)
+    ax.tick_params(labelsize=6)
+    return sc
+
+
+def _draw_spectrum(ax, b, col, sym):
+    """Draw target vs best-cluster spectrum for fitted nucleus `col` (symbol `sym`) into `ax`."""
+    grids = np.asarray(b["spec_grid"]); tgt = np.asarray(b["spec_target"])
+    best = np.asarray(b["spec_best"]); best_loss = np.asarray(b["spec_best_loss"])
+    ax.plot(grids[col], tgt[col], color="limegreen", linewidth=1.8, label="target")
+    ax.plot(grids[col], best[col], color=MODEL_COLOR, linewidth=1.4, label="best cluster")
+    ax.invert_xaxis()                   # NMR convention: δ decreases to the right
+    ax.set_xlabel("δ (ppm)", fontsize=8); ax.set_ylabel("intensity", fontsize=8)
+    ax.set_title(f"{sym} spectrum   loss {float(best_loss[col]):.3f}", fontsize=9)
+    ax.legend(fontsize=7); ax.tick_params(labelsize=7)
+
+
+def _suptitle(b):
+    return (f"NMR grid-search structure resolution  –  structure {b.get('mol_idx', '?')}  "
+            f"atom k={int(b['atom_k'])} ({b.get('atom_symbol', '?')})  "
+            f"target={b.get('target_label', '?')}")
+
+
+def grid_3d_figure(b: dict, out_path, *, atom_color=None, atom_size=None,
+                   cand_cmap="Blues_r", framework_alpha=0.55, top_candidates=5, dpi=150):
+    """Standalone 3-D candidate-site map (framework + best `top_candidates` Na candidates)."""
     metric = b.get("metric", "loss")
-    fp = np.asarray(b["framework_pos"])
-    an = np.asarray(b["framework_numbers"]).astype(int)
+    fig = plt.figure(figsize=(7.0, 6.0), facecolor="white")
+    ax = fig.add_subplot(111, projection="3d")
+    sc = _draw_grid_3d(ax, b, ac=atom_color or ATOM_COLOR, asz=atom_size or ATOM_SIZE,
+                       cand_cmap=cand_cmap, framework_alpha=framework_alpha,
+                       top_candidates=top_candidates)
+    if sc is not None:
+        fig.colorbar(sc, ax=ax, label=f"Na candidate — loss ({metric})", fraction=0.03, pad=0.08)
+    fig.suptitle(_suptitle(b), fontsize=10)
+    fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def grid_spectra_figure(b: dict, out_path, *, dpi=150):
+    """Standalone spectra figure: one target-vs-best panel per fitted nucleus, in a row."""
+    symbols = [str(s) for s in b["spec_symbols"]]
+    n_spec = max(1, len(symbols))
+    fig, axes = plt.subplots(1, n_spec, figsize=(5.5 * n_spec, 5.0), squeeze=False,
+                             facecolor="white")
+    for col, sym in enumerate(symbols):
+        _draw_spectrum(axes[0, col], b, col, sym)
+    fig.suptitle(_suptitle(b), fontsize=10)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def grid_result_figure(b: dict, out_path, *, atom_color=None, atom_size=None,
+                       cand_cmap="Blues_r", framework_alpha=0.55, top_candidates=5, dpi=150):
+    """Combined grid-search figure: 3-D candidate-site map + one spectrum panel per nucleus.
+
+    """ + GRID_DOC
+    metric = b.get("metric", "loss")
     symbols = [str(s) for s in b["spec_symbols"]]
     n_spec = len(symbols)
 
     fig = plt.figure(figsize=(5.5 * (1 + n_spec), 5.0), facecolor="white")
     gs = fig.add_gridspec(1, 1 + n_spec, wspace=0.28)
 
-    # Panel 0 (3-D): faint framework by species + every candidate coloured by spectral loss,
-    # the distinct-minima centres circled, the true site starred (validation only).
     ax3d = fig.add_subplot(gs[0, 0], projection="3d")
-    for z in dict.fromkeys(an.tolist()):
-        m = an == z
-        ax3d.scatter(fp[m, 0], fp[m, 1], fp[m, 2], s=asz.get(z, 40) * 0.5,
-                     c=ac.get(z, "violet"), alpha=framework_alpha, depthshade=True,
-                     edgecolors="none")
-    P = np.asarray(b["cand_pos"]); Lg = np.asarray(b["cand_loss"])
-    fin = np.isfinite(Lg)
-    sc = ax3d.scatter(P[fin, 0], P[fin, 1], P[fin, 2], c=Lg[fin], s=32, cmap=cand_cmap,
-                      norm=mcolors.LogNorm(), edgecolors="k", linewidths=0.2, depthshade=False)
-    pos_true = np.asarray(b["pos_true"])
-    ax3d.scatter(*pos_true, s=260, marker="*", c="limegreen", edgecolors="k", linewidths=0.5,
-                 zorder=6, label="true site (validation)")
-    for c in np.asarray(b["cluster_centres"])[:5]:
-        ax3d.scatter(*c, s=120, marker="o", facecolors="none", edgecolors="red",
-                     linewidths=1.4, zorder=7)
-    ax3d.set_xlabel("x (Å)", fontsize=7); ax3d.set_ylabel("y (Å)", fontsize=7)
-    ax3d.set_zlabel("z (Å)", fontsize=7)
-    ax3d.set_title(f"candidate sites (n={int(fin.sum())})\ncircled = distinct minima",
-                   fontsize=9)
-    ax3d.legend(fontsize=7, loc="upper left")
-    ax3d.tick_params(labelsize=6)
-    fig.colorbar(sc, ax=ax3d, label=f"loss ({metric})", fraction=0.03, pad=0.08)
-
-    # Remaining panels: target vs best-cluster spectrum, per fitted nucleus.
-    grids = np.asarray(b["spec_grid"]); tgt = np.asarray(b["spec_target"])
-    best = np.asarray(b["spec_best"]); best_loss = np.asarray(b["spec_best_loss"])
+    sc = _draw_grid_3d(ax3d, b, ac=atom_color or ATOM_COLOR, asz=atom_size or ATOM_SIZE,
+                       cand_cmap=cand_cmap, framework_alpha=framework_alpha,
+                       top_candidates=top_candidates)
+    if sc is not None:
+        fig.colorbar(sc, ax=ax3d, label=f"Na candidate — loss ({metric})", fraction=0.03, pad=0.08)
     for col, sym in enumerate(symbols):
-        ax = fig.add_subplot(gs[0, 1 + col])
-        ax.plot(grids[col], tgt[col], color="limegreen", linewidth=1.8, label="target")
-        ax.plot(grids[col], best[col], color=MODEL_COLOR, linewidth=1.4, label="best cluster")
-        ax.invert_xaxis()               # NMR convention: δ decreases to the right
-        ax.set_xlabel("δ (ppm)", fontsize=8)
-        ax.set_ylabel("intensity", fontsize=8)
-        ax.set_title(f"{sym} spectrum   loss {float(best_loss[col]):.3f}", fontsize=9)
-        ax.legend(fontsize=7)
-        ax.tick_params(labelsize=7)
+        _draw_spectrum(fig.add_subplot(gs[0, 1 + col]), b, col, sym)
 
-    fig.suptitle(
-        f"NMR grid-search structure resolution  –  structure {b.get('mol_idx', '?')}  "
-        f"atom k={int(b['atom_k'])} ({b.get('atom_symbol', '?')})  "
-        f"target={b.get('target_label', '?')}",
-        fontsize=10,
-    )
+    fig.suptitle(_suptitle(b), fontsize=10)
     fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 

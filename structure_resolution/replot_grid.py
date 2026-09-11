@@ -16,9 +16,9 @@ Usage:
     --out-dir DIR          where to write (default: <results_dir>)
     --dpi N                figure DPI                         (default: 150)
     --fps N / --top-n N / --max-frames N   GIF controls (default: bundle values)
-    --cand-cmap NAME       candidate-loss colormap            (default: viridis_r)
+    --cand-cmap NAME       Na-candidate loss colormap         (default: Blues_r)
     --path-cmap NAME       descent-path colormap              (default: plasma)
-    --framework-alpha F    framework opacity in the figure    (default: 0.18)
+    --framework-alpha F    framework opacity in the figure    (default: 0.55)
 """
 import argparse
 import os
@@ -39,9 +39,11 @@ def main(argv=None):
     p.add_argument("--fps", type=int, default=None)
     p.add_argument("--top-n", type=int, default=None)
     p.add_argument("--max-frames", type=int, default=None)
-    p.add_argument("--cand-cmap", default="viridis_r")
+    p.add_argument("--cand-cmap", default="Blues_r")
     p.add_argument("--path-cmap", default="plasma")
-    p.add_argument("--framework-alpha", type=float, default=0.18)
+    p.add_argument("--framework-alpha", type=float, default=0.55)
+    p.add_argument("--top-candidates", type=int, default=5,
+                   help="plot only the N lowest-loss Na candidates in the 3-D panels (0 = all)")
     args = p.parse_args(argv)
 
     if not os.path.isfile(os.path.join(args.results_dir, sr_viz.DATA_NAME)):
@@ -52,10 +54,20 @@ def main(argv=None):
     os.makedirs(out_dir, exist_ok=True)
 
     if args.figure:
+        top = args.top_candidates or None
         fig_path = os.path.join(out_dir, "structure_resolution_result.png")
         sr_viz.grid_result_figure(b, fig_path, cand_cmap=args.cand_cmap,
-                                  framework_alpha=args.framework_alpha, dpi=args.dpi)
-        print(f"  figure → {fig_path}")
+                                  framework_alpha=args.framework_alpha,
+                                  top_candidates=top, dpi=args.dpi)
+        print(f"  combined  → {fig_path}")
+        d3_path = os.path.join(out_dir, "structure_resolution_3d.png")
+        sr_viz.grid_3d_figure(b, d3_path, cand_cmap=args.cand_cmap,
+                              framework_alpha=args.framework_alpha,
+                              top_candidates=top, dpi=args.dpi)
+        print(f"  3-D only  → {d3_path}")
+        sp_path = os.path.join(out_dir, "structure_resolution_spectra.png")
+        sr_viz.grid_spectra_figure(b, sp_path, dpi=args.dpi)
+        print(f"  spectra   → {sp_path}")
 
     if args.gif:
         gif_path = os.path.join(out_dir, "structure_resolution.gif")

@@ -63,26 +63,27 @@ model:
     - _target_: tensorial.gcnn.RadialBasisEdgeEncoding
       r_max: ${r_max}
 
+    # Hidden irreps: `mul` channels of every irrep up to `ell_max`, see
+    # tensorial.make_irreps.  Override per run, e.g. `mul=16 ell_max=3 num_layers=4`.
+    # Reduce the number passing this point
     - _target_: tensorial.gcnn.NodewiseLinear
       field: attributes
-      irreps_out: 8x0o + 8x0e + 8x1o + 8x1e + 8x2o + 8x2e #+ 8x3o + 8x3e
+      irreps_out:
+        _target_: tensorial.make_irreps
+        mul: ${oc.select:mul,8}
+        ell_max: ${oc.select:ell_max,2}
+        parity: o + e
 
-    - _target_: tensorial.gcnn.NequipLayer
-      num_species: ${from_data.n_elements}     
-      irreps_out: 8x0o + 8x0e + 8x1o + 8x1e + 8x2o + 8x2e #+ 8x3o + 8x3e
-      avg_num_neighbours: ${from_data.avg_num_neighbours}
-
-    - _target_: tensorial.gcnn.NequipLayer
+    - _target_: tensorial.gcnn.Nequip
+      hidden_irreps:
+        _target_: tensorial.make_irreps
+        mul: ${oc.select:mul,8}
+        ell_max: ${oc.select:ell_max,2}
+        parity: o + e
+      num_layers: ${oc.select:num_layers,3}
       num_species: ${from_data.n_elements}
-      irreps_out: 8x0o + 8x0e + 8x1o + 8x1e + 8x2o + 8x2e #+ 8x3o + 8x3e
       avg_num_neighbours: ${from_data.avg_num_neighbours}
 
-    - _target_: tensorial.gcnn.NequipLayer
-      num_species: ${from_data.n_elements}
-      irreps_out: 8x0o + 8x0e + 8x1o + 8x1e + 8x2o + 8x2e #+ 8x3o + 8x3e
-      avg_num_neighbours: ${from_data.avg_num_neighbours}
-
-    # Reduce the number passing this point
     - _target_: tensorial.gcnn.NodewiseLinear
       irreps_out: 4x0e + 4x0o + 4x1e + 4x1o + 4x2e + 4x2o #+ 2x3o + 2x3e
 

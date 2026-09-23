@@ -1,0 +1,67 @@
+# @package _global_
+
+# Optuna (TPE) search over the NequIP stack for NMR tensors on QM9, on an evenly spread
+# subset of the dataset.
+#
+#   pip install hydra-optuna-sweeper
+#   e3response train -i configs/train.yaml -m experiment=qm9_optuna
+#
+# Trials run one at a time by default; on a cluster add a parallel launcher, e.g.
+# `hydra/launcher=submitit_slurm hydra.sweeper.n_jobs=8` (then each batch of 8 trials is one
+# job array, and TPE picks the next batch from the finished one).
+#
+# Local plumbing check on ~1000 molecules, a few trials, short trials:
+#   e3response train -i configs/train.yaml -m experiment=qm9_optuna \
+#       'data.limit="::130"' hydra.sweeper.n_trials=4 train.max_time="00:00:05:00"
+
+defaults:
+  - override /data: qm9_nmr
+  - override /model: nequip_nmr
+  - override /hydra/sweeper: optuna
+
+# Base values of the stack knobs, swept below.  They must exist as top-level keys for the
+# sweeper (and `mul=16` on the command line) to override them; each model config falls back to
+# its own default when they are absent.
+mul: 16
+ell_max: 2
+num_layers: 3
+
+# `limit` slices the dataset, and QM9 is roughly ordered by molecule size, so take every 13th
+# structure (~10k of ~134k) rather than the first 10k, which would be almost all small molecules
+data:
+  limit: "::13"
+
+train:
+  min_epochs: 0
+  max_epochs: 10000 # trials are bounded by max_time, not by epochs
+  # Stop each trial cleanly well before any cluster walltime, so it still reports its metric
+  max_time: "00:01:30:00" # DD:HH:MM:SS
+  check_val_every_n_epoch: 1
+
+# Every trial is judged on the same held-out split; the test set is not touched
+test: false
+
+# Per-trial parity plots are wasted work in a sweep; make them for the best model afterwards
+listeners:
+  parity_plots: null
+
+optimized_metric: "val/nmr_tensors_rmse"
+
+hydra:
+  sweeper:
+    direction: minimize
+    study_name: qm9_nmr_nequip
+    storage: null
+    n_trials: 40
+    n_jobs: 1
+    sampler:
+      _target_: optuna.samplers.TPESampler
+      seed: 42
+    params:
+      r_max: choice(3.0, 4.0, 5.0)
+      num_layers: choice(2, 3, 4)
+      mul: choice(8, 16, 32)
+      # The NMR head emits 1x2e, so ell_max must be at least 2.  Features start as scalars and
+      # each layer raises l by at most the top l of the edge harmonics (2 here), so ell_max=3
+      # is only reachable with num_layers >= 2
+      ell_max: choice(2, 3)

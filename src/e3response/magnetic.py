@@ -24,24 +24,36 @@ class InducedMagneticField(linen.Module):
     energy_key: str = predicted(atomic.keys.ENERGY)  
     mu_key: str = keys.NUCLEAR_MAGNETIC_MOMENT
     out_key: str = predicted(keys.INDUCED_MAGNETIC_FIELD)
+    # If True, evaluate the derivative at graph.nodes[mu]; else at zero.  The dataset carries
+    # only the per-species moduli of μ, which are not the nodal vectors this derivative needs,
+    # so in practice this stays False.
+    mu_at_node: bool = False
+    # Reverse mode: the energy is a scalar, so one VJP gives ∂E/∂μ for every node at once.
+    # Forward mode would need 3 * n_nodes JVPs, which dominates the cost of the whole model.
+    mode: str = "rev"
     
     def setup(self) -> None:
         # Diff E against μ (per-node). No at= — shape (N_atoms, 3) unknown at setup time.
         self._diff_E_wrt_mu = gcnn.diff(
             self.energy_fn,
-            f"globals.{self.energy_key}:g",
+            f"globals.{self.energy_key}:gk",
             wrt=[f"nodes.{self.mu_key}:Iα"],
             out=":Iα",
             return_graph=True,
-            mode="fwd",
+            mode=self.mode,
         )
     
     def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
-        mu_zeros = jnp.zeros_like(graph.nodes[self.mu_key])
-        
+        if self.mu_at_node:
+            mu_val = graph.nodes[self.mu_key]
+        else:
+            # μ is not part of the dataset: pass a single (3,) vector and let `gcnn.diff`
+            # broadcast it over the nodes, then write it into the graph before the energy runs.
+            mu_val = jnp.zeros(3)
+
         B_ind, graph = self._diff_E_wrt_mu(
             graph,
-            mu_zeros,
+            mu_val,
         )
 
         graph = (
@@ -70,6 +82,11 @@ class MagneticShieldingTensor(linen.Module):
     B_ext: str = keys.EXTERNAL_MAGNETIC_FIELD
     out_key: str = predicted(keys.NMR_TENSORS)
     B_ext_at_graph: bool = False  # if True, evaluate Jacobian at graph.globals[B_ext]; else at zero
+    # Forward mode: B_ext has 3 components while the output has 3 per node, so this costs
+    # 3 JVPs regardless of system size.  Keep this "fwd" even when `B_ind_fn` differentiates
+    # in reverse mode — the two derivatives are free to use different modes precisely because
+    # they are separate modules.
+    mode: str = "fwd"
 
     def setup(self) -> None:
         self._diff_fn = gcnn.diff(
@@ -78,7 +95,7 @@ class MagneticShieldingTensor(linen.Module):
             wrt=[f"globals.{self.B_ext}:gα"],
             out=":Iγα",
             return_graph=True,
-            mode="fwd",
+            mode=self.mode,
         )
 
     def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:

@@ -40,9 +40,13 @@ from_data:
   atomic_numbers: atomic/all_atomic_numbers
   avg_num_neighbours: atomic/avg_num_neighbours
   # force_scale: atomic/force_std
-  # energy_shifts:
-  #   _target_: tensorial.gcnn.atomic.EnergyContributionLstsq
-  #   type_map: ${from_data.atomic_numbers}
+  energy_shifts:
+    _target_: tensorial.gcnn.atomic.EnergyContributionLstsq
+    type_map: ${from_data.atomic_numbers}
+  # Optimiser steps in one epoch, used for reduce_on_plateau's accumulation_size so that its
+  # patience/cooldown are in epochs regardless of batch size
+  steps_per_epoch:
+    _target_: tensorial.reaxkit.StepsPerEpoch
 
 # Metric returned by tensorial.reaxkit.train.main, used as the objective by
 # hyperparameter sweepers.  Leave null for a plain training run.

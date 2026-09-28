@@ -11,6 +11,37 @@ from tensorial.gcnn.keys import predicted
 from . import keys
 
 
+class L2Regularization(gcnn.Loss):
+    """Penalise the magnitude of a predicted field that has no ground truth.
+
+    :class:`tensorial.gcnn.Loss` reads its target from the targets graph, but a quantity
+    like the induced field at zero external field is only ever produced by the model, so
+    there is nothing to read there.  Here the target is implicitly zero and the field is
+    read from the predictions graph, which keeps the masking and per-graph reduction that
+    :class:`~tensorial.gcnn.Loss` already implements.
+    """
+
+    def __init__(
+        self,
+        field: str,
+        *,
+        reduction: str = "mean",
+        label: str = None,
+    ):
+        super().__init__(
+            lambda predicted, _target: jnp.square(predicted),
+            field,
+            reduction=reduction,
+            label=label or f"{field}_l2",
+        )
+
+    def _call(
+        self, predictions: jraph.GraphsTuple, targets: jraph.GraphsTuple
+    ) -> jax.Array:
+        # The regularised quantity only exists in the model output
+        return super()._call(predictions, predictions)
+
+
 def response_loss(
     energy: bool | float = False,
     forces: bool | float = False,
@@ -96,9 +127,11 @@ def response_loss(
         )
 
     if induced_magnetic_field:
-        weights.append(1.0 if isinstance(nmr_tensors, bool) else nmr_tensors)
+        weights.append(
+            1.0 if isinstance(induced_magnetic_field, bool) else induced_magnetic_field
+        )
         loss_terms.append(
-            gcnn.L2Regularization(
+            L2Regularization(
                 f"nodes.{predicted(keys.INDUCED_MAGNETIC_FIELD)}",
             )
         )

@@ -16,7 +16,7 @@ from tensorial import gcnn
 from typing_extensions import override
 
 from e3response import keys
-from e3response.data._limit import parse_limit
+from e3response.data._limit import apply_limit
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ class SiNmrDataModule(reax.DataModule):
         structures = self._load_structures()
         train, val, test = self._split(structures, rngs)
         split_structures = dict(zip(("train", "val", "test"), (train, val, test)))[split]
-        split_structures = split_structures[parse_limit(limit)]
+        split_structures = apply_limit(split_structures, limit)
 
         return list(map(self._to_graph, split_structures))
 
@@ -177,7 +177,7 @@ class SiNmrDataModule(reax.DataModule):
 
             structures.append(atoms)
 
-        structures = structures[parse_limit(self._limit)]
+        structures = apply_limit(structures, self._limit)
 
         _LOGGER.info("Number of loaded structures: %d", len(structures))
         return structures

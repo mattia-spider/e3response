@@ -14,7 +14,7 @@ from tensorial import gcnn
 from typing_extensions import override
 
 from e3response import keys
-from e3response.data._limit import parse_limit
+from e3response.data._limit import apply_limit
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ def _apply_limit(structures: list[Atoms], limit: int | str | None) -> list[Atoms
     - "bulk"/"surface"            → keep only that ``struct_type``
     - int N                       → first N structures
     - "a:b"/"a:b:s"               → Python-slice semantics
+    - "random:N"/"random:N:seed"  → N structures drawn at random (see apply_limit)
     """
     if isinstance(limit, str):
         limit_lower = limit.lower()
@@ -37,7 +38,7 @@ def _apply_limit(structures: list[Atoms], limit: int | str | None) -> list[Atoms
             return [s for s in structures if s.info.get("struct_type") == "bulk"]
         if limit_lower == "surface":
             return [s for s in structures if s.info.get("struct_type") == "surf"]
-    return structures[parse_limit(limit)]
+    return apply_limit(structures, limit)
 
 
 class CshNmrDataModule(reax.DataModule):

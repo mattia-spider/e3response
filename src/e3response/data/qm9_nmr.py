@@ -26,7 +26,7 @@ import tqdm
 from typing_extensions import override
 
 from e3response import keys
-from e3response.data._limit import parse_limit
+from e3response.data._limit import apply_limit
 
 __all__ = ("Qm9NmrDataset", "Qm9NmrDataModule")
 
@@ -238,11 +238,10 @@ class Qm9NmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
     def _list_log_files(zip_path: str, limit: int | str | None = None) -> list[str]:
         """List the sorted, `limit`-sliced ``.log`` filenames in `zip_path`, without
         reading or parsing any of them."""
-        limit_slice = parse_limit(limit)
         with zipfile.ZipFile(zip_path, "r") as zip_ref:
             # Sort so that integer-range limits have stable, reproducible semantics.
             log_files = sorted(f for f in zip_ref.namelist() if f.endswith(".log"))
-        return log_files[limit_slice]
+        return apply_limit(log_files, limit)
 
     @staticmethod
     def _extract_log_files(archive_log_pairs: Sequence[tuple[str, str]]) -> list:
@@ -544,7 +543,7 @@ class Qm9NmrDataModule(reax.DataModule):
         n = Qm9NmrDataset.count(self._data_dir, self._dataset, self._limit)
         splits = reax.data.random_split(rngs, dataset=range(n), lengths=self._train_val_test_split)
         indices = dict(zip(("train", "val", "test"), splits))[split].indices
-        indices = indices[parse_limit(limit)]
+        indices = apply_limit(indices, limit)
 
         return Qm9NmrDataset(
             r_max=self._rmax,

@@ -4,7 +4,7 @@ defaults:
   # - model_summary
   # - metrics_printer
   # - rich_progress_bar
-  - parity_plots
+  # - parity_plots
   - _self_
 
 model_checkpoint:

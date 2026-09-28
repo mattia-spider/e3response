@@ -7,12 +7,6 @@ metrics:
       predictions: nodes.predicted_nmr_tensors
       targets: nodes.nmr_tensors
 
-    energy_rmse:
-      _target_: tensorial.gcnn.graph_metric
-      metric: rmse
-      predictions: globals.predicted_energy
-      targets: globals.energy
-
     # Per-species NMR RMSE.  `species` is an atomic number, mapped to the model's species
     # index through the same type map the model was built with
     nmr_rmse_H:
@@ -70,8 +64,11 @@ optimizer:
 
 loss_fn:
   _target_: e3response.losses.response_loss
-  energy: true
+  # No energy term: B_ind is read out directly here, so the stack has no energy head and
+  # nothing produces `predicted_energy`
   nmr_tensors: true
+  # L2 on the intermediate B_ind, which has no ground truth; see losses.L2Regularization
+  induced_magnetic_field: true
 
 model:
   _target_: tensorial.nn.Sequential
@@ -84,6 +81,10 @@ model:
         species:
           _target_: tensorial.tensors.OneHot
           num_classes: ${from_data.n_elements}
+        globals.external_magnetic_field:
+          _target_: tensorial.tensors.SphericalHarmonic
+          irreps: 1e
+          normalise: False
 
     - _target_: tensorial.gcnn.EdgeVectors
 
@@ -91,7 +92,11 @@ model:
       attrs:
         edge_vectors:
           _target_: tensorial.tensors.SphericalHarmonic
-          irreps: 0e + 1o + 2e
+          irreps:
+            _target_: tensorial.make_irreps
+            mul: 1
+            ell_max: ${oc.select:ell_max,2}
+            parity: sh
           normalise: True
 
     - _target_: tensorial.gcnn.RadialBasisEdgeEncoding
@@ -118,45 +123,15 @@ model:
       num_species: ${from_data.n_elements}
       avg_num_neighbours: ${from_data.avg_num_neighbours}
 
-    # Only what the readout below can consume: an equivariant linear map cannot change l or
-    # parity, so any other irrep here is computed and then discarded.  The NMR tensor is
-    # 0e + 1e + 2e, so ell_max is 2 here whatever the hidden stack uses.
+    # B_ind is read out as 1e below and a linear map cannot change l or parity, so only the
+    # 1e channels survive; everything else would be computed and discarded.
     - _target_: tensorial.gcnn.NodewiseLinear
-      irreps_out:
-        _target_: tensorial.make_irreps
-        mul: ${oc.select:mul_readout,4}
-        ell_max: 2
-        parity: e
+      irreps_out: ${oc.select:mul_readout,4}x1e
 
-    # Energy head, reads the shared trunk in `features` alongside the NMR head below
     - _target_: tensorial.gcnn.NodewiseLinear
-      irreps_out: 1x0e
-      out_field: energy # Per-atom energy
+      irreps_out: 1x1e
+      out_field: predicted_induced_magnetic_field # Per-atom induced magnetic field 
 
-    # Per-species baseline, so the energy head learns residuals rather than the ~-408 offset
-    - _target_: tensorial.gcnn.atomic.per_species_rescale
-      num_types: ${from_data.n_elements}
-      field: nodes.energy
-      out_field: nodes.energy
-      shifts: ${from_data.energy_shifts}
-      scales: 1.0 # pin it: a learnable scale would rescale dE/dmu per species
-
-    # Total energy
-    - _target_: tensorial.gcnn.NodewiseReduce
-      field: energy
-      out_field: predicted_energy
-      as_array: True # GraphMetric has no as_array() of its own, unlike gcnn.Loss
-
-    # Per atom NMR tensors
-    - _target_: tensorial.gcnn.NodewiseLinear
-      irreps_out: 1x0e + 1x1e + 1x2e
-      out_field: predicted_nmr_tensors
-
-    - _target_: tensorial.gcnn.NodewiseDecoding
-      in_field: predicted_nmr_tensors
-      attrs:
-        predicted_nmr_tensors:
-          _target_: tensorial.CartesianTensor
-          formula: ij
-          i: 1e
-          j: 1e
+    # Per atom NMR tensors, sigma = dB_ind/dB_ext, evaluated at B_ext = 0
+    - _target_: e3response.magnetic.MagneticShieldingTensor
+      _partial_: True

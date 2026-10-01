@@ -115,7 +115,10 @@ def test_qm9_nmr_datamodule(dataset_name, test_engine):
         mu = batch.nodes["mu"]
 
         assert isinstance(mu, np.ndarray), f"'mu' in {loader_fn} is not a numpy array"
-        assert mu.ndim == 1, f"'mu' in {loader_fn} has wrong shape {mu.shape}, expected 1D array"
+        # Per-node scalars are (n_node, 1) since tensorial normalised graph array shapes
+        assert (
+            mu.ndim == 2 and mu.shape[1] == 1
+        ), f"'mu' in {loader_fn} has wrong shape {mu.shape}, expected (n_node, 1)"
         assert not np.any(np.isnan(mu)), f"'mu' in {loader_fn} contains NaNs"
 
         # Check energy

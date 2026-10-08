@@ -1,11 +1,17 @@
 # @package _global_
 
+# Evaluate a checkpoint of a training run on splits of its dataset, plotting the parity plots of
+# each split, e.g.:
+#   e3response predict -i configs/eval.yaml run_dir=logs/train/runs/<date>_<time>
+#
+# The model, datamodule (and so the train/validation/test split) and trainer are rebuilt from the
+# `config.yaml` saved in `run_dir`.  `data` and `trainer` set here are applied on top of the run's,
+# e.g. `+trainer.accelerator=cpu` or `+data.batch_size=8`.
+
 defaults:
   - _self_
-  - data: silicon # choose datamodule with `test_dataloader()` for evaluation
-  - model: nequip
+  - listeners: parity_plots
   - logger: null
-  - trainer: default
   - paths: default
   - extras: default
   - hydra: default
@@ -14,7 +20,11 @@ task_name: "eval"
 
 tags: ["dev"]
 
-# passing checkpoint path is necessary for evaluation
-ckpt_path: ???
+# output directory of the training run to evaluate
+run_dir: ???
 
-predict:
+# checkpoint to evaluate: "last", "best" or a path (also looked up in <run_dir>/checkpoints)
+ckpt_path: last
+
+# splits of the run's dataset to evaluate
+splits: [train, validation, test]

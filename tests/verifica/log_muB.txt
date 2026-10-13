@@ -1,0 +1,4 @@
+deriv2nd_muB l=2 mul=4 n=2 s=0 B1=5.0e-02 HCN=7.9e-01 C2H2=3.7e-01 H2CO(xy/z..)=1.1e+00/0.0e+00/0.0e+00/9.1e-01 B4min=2.6e-01 eq=1.4e-15 inv=0.0e+00 (158s)
+deriv2nd_muB l=2 mul=4 n=2 s=1 B1=2.5e-01 HCN=8.9e-01 C2H2=9.3e-01 H2CO(xy/z..)=8.4e-01/0.0e+00/0.0e+00/8.3e-01 B4min=8.3e-03 eq=8.8e-16 inv=0.0e+00 (123s)
+B6 {'B6_max_abs_err': 6.154081411136048e-11, 'B6_ref_max_sigma': 0.13480514035060404, 'B6_rel_err': 4.5651682088163576e-10, 'model': 'deriv2nd_muB', 'ell_max': 2, 'seed': 0}
+B6 {'B6_max_abs_err': 7.502875271482405e-11, 'B6_ref_max_sigma': 0.1892699540848154, 'B6_rel_err': 3.9641132200625075e-10, 'model': 'deriv2nd_muB', 'ell_max': 2, 'seed': 1}

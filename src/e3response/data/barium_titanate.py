@@ -43,6 +43,7 @@ class BtoDataModule(reax.DataModule[jraph.GraphsTuple, jraph.GraphsTuple]):
         train_val_test_split: Sequence[int | float] = (0.8, 0.1, 0.1),
         batch_size: int = 64,
         include_electric_field=False,
+        drop_unphysical_dielectric: bool = False,
     ) -> None:
         """Initialize a DataModule containing barium titenate dataset.
 
@@ -60,6 +61,7 @@ class BtoDataModule(reax.DataModule[jraph.GraphsTuple, jraph.GraphsTuple]):
         self._train_val_test_split: Final[Sequence[int | float]] = train_val_test_split
         self._batch_size: Final[int] = batch_size
         self._include_electric_field: Final[bool] = include_electric_field
+        self._drop_unphysical_dielectric: Final[bool] = drop_unphysical_dielectric
 
         # State
         self.batch_size_per_device = batch_size
@@ -90,6 +92,8 @@ class BtoDataModule(reax.DataModule[jraph.GraphsTuple, jraph.GraphsTuple]):
                 output_dir = self._extract_tarball(archive)
 
                 structures = get_structures(output_dir, self._tensors, self._include_electric_field)
+                if self._drop_unphysical_dielectric and "dielectric" in self._tensors:
+                    structures = _drop_unphysical_dielectric(structures, archive)
                 if not structures:
                     _LOGGER.warning("No structure extracted from archive `%s`, skipping", archive)
                     continue
@@ -217,6 +221,21 @@ def get_tensors(root_dir: pathlib.Path, tensor_type: str, index: str) -> np.ndar
     return np.load(f"{root_dir}/{tensor_type}/{index}.npy")
 
 
+def _drop_unphysical_dielectric(structures: list[ase.Atoms], archive: str) -> list[ase.Atoms]:
+    """Drop structures whose dielectric tensor has an eigenvalue below 1, which no physical ε∞ has.
+
+    In the BTO archives 33 of 228 structures have one diagonal component near -64 while the others
+    are near 5, the signature of a failed calculation rather than of the material.
+    """
+    kept = [s for s in structures if np.linalg.eigvalsh(s.info["dielectric"]).min() >= 1.0]
+    if len(kept) < len(structures):
+        _LOGGER.warning(
+            "Dropped %d of %d structures with an unphysical dielectric tensor from `%s`",
+            len(structures) - len(kept), len(structures), archive,
+        )
+    return kept
+
+
 def get_structures(
     root_dir: pathlib.Path, tensors: Iterable[str], include_electric_field: bool = False
 ) -> list[ase.Atoms]:
@@ -233,10 +252,15 @@ def get_structures(
 
             for tensor in tensors:
                 tens = get_tensors(root_dir, tensor, structure_number)
-                structure.arrays[tensor] = tens
+                # Per-atom tensors go in `arrays`, per-structure ones in `info`, which is where
+                # graph_from_ase reads the global keys from
+                if tensor in global_tensors:
+                    structure.info[tensor] = tens
+                else:
+                    structure.arrays[tensor] = tens
 
             if include_electric_field:
-                structure.arrays[keys.EXTERNAL_ELECTRIC_FIELD] = np.zeros(3)
+                structure.info[keys.EXTERNAL_ELECTRIC_FIELD] = np.zeros(3)
         except FileNotFoundError:
             continue
 

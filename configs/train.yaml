@@ -32,7 +32,7 @@ task_name: "train"
 # overwrite from command line with `e3response train tags="[first_tag, second_tag]"`
 tags: [ "dev" ]
 
-r_max: 3.0
+r_max: 5.0
 
 # Gather data use by the model before training
 from_data:

@@ -13,38 +13,13 @@ metrics:
       predictions: globals.predicted_energy
       targets: globals.energy
 
-    # Per-species NMR RMSE.  `species` is an atomic number, mapped to the model's species
-    # index through the same type map the model was built with
-    nmr_rmse_H:
-      _target_: tensorial.gcnn.species_metric
+    # Per-species NMR RMSE for every species in the type map gathered from the data, logged as
+    # nmr_rmse_<symbol> (nmr_rmse_H, nmr_rmse_C, ...).  Add `species: [1, 6]` to keep only some
+    nmr_rmse:
+      _target_: tensorial.gcnn.species_metrics
       metric: rmse
       predictions: nodes.predicted_nmr_tensors
       targets: nodes.nmr_tensors
-      species: 1
-      atomic_numbers: ${from_data.atomic_numbers}
-
-    nmr_rmse_C:
-      _target_: tensorial.gcnn.species_metric
-      metric: rmse
-      predictions: nodes.predicted_nmr_tensors
-      targets: nodes.nmr_tensors
-      species: 6
-      atomic_numbers: ${from_data.atomic_numbers}
-
-    nmr_rmse_N:
-      _target_: tensorial.gcnn.species_metric
-      metric: rmse
-      predictions: nodes.predicted_nmr_tensors
-      targets: nodes.nmr_tensors
-      species: 7
-      atomic_numbers: ${from_data.atomic_numbers}
-
-    nmr_rmse_O:
-      _target_: tensorial.gcnn.species_metric
-      metric: rmse
-      predictions: nodes.predicted_nmr_tensors
-      targets: nodes.nmr_tensors
-      species: 8
       atomic_numbers: ${from_data.atomic_numbers}
 
 optimizer:

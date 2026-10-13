@@ -107,10 +107,12 @@ def _limit_spec(args) -> str | None:
     return None
 
 
-def _supports_limit(args) -> bool | None:
-    """Whether the datamodule takes a `limit`, or None if that cannot be determined.
+def _limit_key(args) -> str | None:
+    """The override key of the data config's `limit`, "" if it takes none, or None if unknown.
 
-    Checked in a CPU-only child so that importing JAX here never touches the GPU the probes use.
+    The `limit` is either the datamodule's own (`data.limit`) or, for a `GraphDataModule` built
+    from a dataset, that dataset's (`data.dataset.limit`).  Checked in a CPU-only child so that
+    importing JAX here never touches the GPU the probes use.
     """
     path = os.path.join(os.path.dirname(os.path.abspath(args.config)), "data", f"{args.data}.yaml")
     if not os.path.isfile(path):
@@ -118,15 +120,22 @@ def _supports_limit(args) -> bool | None:
     code = (
         "import inspect, hydra.utils, omegaconf;"
         f"c = omegaconf.OmegaConf.load({path!r});"
-        "print('limit' in inspect.signature(hydra.utils.get_class(c._target_).__init__).parameters)"
+        "nested = 'dataset' in c and '_target_' in c.dataset;"
+        "c, key = (c.dataset, 'data.dataset.limit') if nested else (c, 'data.limit');"
+        "f = hydra.utils.get_class(c._target_).__init__;"
+        "print(key if 'limit' in inspect.signature(f).parameters else '-')"
     )
     res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          env=dict(os.environ, JAX_PLATFORMS="cpu"), check=False)
     out = res.stdout.strip().splitlines()
-    return {"True": True, "False": False}.get(out[-1] if out else "")
+    if not out:
+        return None
+    return "" if out[-1] == "-" else out[-1]
 
 
-def _probe(args, model: str, batch_size: int, stack: dict, limit: str | None) -> tuple[str, int]:
+def _probe(
+    args, model: str, batch_size: int, stack: dict, limit: str | None, limit_key: str
+) -> tuple[str, int]:
     cmd = [
         sys.executable, "-m", "e3response.cli", "train", "-i", args.config,
         f"data={args.data}", f"model={model}", f"trainer={args.trainer}",
@@ -137,7 +146,7 @@ def _probe(args, model: str, batch_size: int, stack: dict, limit: str | None) ->
         "train.min_epochs=1", "train.max_epochs=1",
     ]
     if limit is not None:
-        cmd.append(f"++data.limit={limit}")
+        cmd.append(f"++{limit_key}={limit}")
     # The stack keys are only read through ${oc.select:...} by the model configs, so they are not
     # in the base config and need ++ as well
     cmd += [f"++{k}={v}" for k, v in stack.items()] + args.overrides
@@ -193,7 +202,9 @@ def main() -> int:
     args = par.parse_args()
 
     limit = _limit_spec(args)
-    if limit is not None and _supports_limit(args) is False:
+    # Fall back to the datamodule's own `limit` if the config could not be inspected
+    limit_key = _limit_key(args)
+    if limit is not None and limit_key == "":
         print(f"The '{args.data}' datamodule takes no `limit`, so it cannot be subset: rerun "
               f"with --subset all.")
         return 2
@@ -223,7 +234,7 @@ def main() -> int:
                   f"layers={stack['num_layers']}] ===", flush=True)
             largest, largest_peak = None, 0
             for bs in sizes:
-                status, peak = _probe(args, model, bs, stack, limit)
+                status, peak = _probe(args, model, bs, stack, limit, limit_key or "data.limit")
                 print(f"  batch_size={bs:<5} {status:<28} "
                       f"{f'{peak} MiB peak' if peak else 'peak unknown'}", flush=True)
                 if _NO_LIMIT.search(status):

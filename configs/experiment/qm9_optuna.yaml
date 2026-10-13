@@ -12,7 +12,7 @@
 #
 # Local plumbing check on ~1000 molecules, a few trials, short trials:
 #   e3response train -i configs/train.yaml -m experiment=qm9_optuna \
-#       'data.limit="::130"' hydra.sweeper.n_trials=4 train.max_time="00:00:05:00"
+#       'data.dataset.limit="::130"' hydra.sweeper.n_trials=4 train.max_time="00:00:05:00"
 
 defaults:
   - override /data: qm9_nmr

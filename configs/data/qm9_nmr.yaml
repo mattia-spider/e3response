@@ -1,6 +1,14 @@
-_target_: e3response.data.qm9_nmr.Qm9NmrDataModule
-r_max: ${r_max}
-data_dir: ${paths.data_dir}/qm9_nmr/
+# Random train/val/test split. For k-fold cross-validation swap the split, e.g.:
+#   _target_: tensorial.gcnn.data.GraphDataModule.from_kfold
+#   fold: 0          # sweep with `data.fold=0,1,2,3,4 -m`
+#   n_folds: 5
+#   test_fraction: 0.1
+# (and drop `train_val_test_split`, which `from_kfold` does not take).
+_target_: tensorial.gcnn.data.GraphDataModule.from_random_split
+dataset:
+  _target_: e3response.data.qm9_nmr.Qm9NmrDataset
+  r_max: ${r_max}
+  data_dir: ${paths.data_dir}/qm9_nmr/
+  limit: 40
 batch_size: 8 # Needs to be divisible by the number of devices (e.g., if in a distributed setup)
 train_val_test_split: [0.8, 0.1, 0.1]
-limit: 40

@@ -153,6 +153,22 @@ def load_model(run_dir: str):
     return module, params, cfg
 
 
+def dataset_and_strategy(data_cfg):
+    """`Qm9NmrDataset` arguments and `SplitStrategy` of a run's data config.
+
+    Handles both the `GraphDataModule` layout (dataset nested under `dataset`) and the
+    flat one of runs trained with the old `Qm9NmrDataModule` (always a random split)."""
+    data_cfg = omegaconf.OmegaConf.to_container(data_cfg, resolve=True)
+    if isinstance(data_cfg.get("dataset"), dict):
+        kwargs = {k: v for k, v in data_cfg["dataset"].items() if k != "_target_"}
+        # An empty dataset builds the module without loading anything, just for its strategy
+        datamodule = hydra.utils.instantiate({**data_cfg, "dataset": []}, _convert_="object")
+        return kwargs, datamodule._strategy
+    keys_ = ("r_max", "data_dir", "dataset", "atom_keys", "limit")
+    kwargs = {k: data_cfg[k] for k in keys_ if k in data_cfg}
+    return kwargs, gcnn.data.RandomSplit(data_cfg.get("train_val_test_split", (0.85, 0.05, 0.1)))
+
+
 def make_graph_builder(r_max: float):
     """Return a function ase.Atoms → jraph.GraphsTuple with the same keys as
     Qm9NmrDataset.  The neighbor list is rebuilt from scratch every call, which
@@ -566,14 +582,15 @@ if not os.path.isdir(RUN_DIR):
 
 print(f"Loading model from {os.path.basename(RUN_DIR)} …")
 module, params, cfg = load_model(RUN_DIR)
-to_graph  = make_graph_builder(cfg.data.r_max)
+dataset_kwargs, strategy = dataset_and_strategy(cfg.data)
+to_graph  = make_graph_builder(dataset_kwargs["r_max"])
 predictor = make_predictor(module, params, to_graph)
 print("  loaded.")
 
 # ── STEP 0b: Reproduce (part of) the run's train/val/test split ────────────────
 # reax.data.random_split draws from the Engine's default nnx.Rngs stream, which REAX
 # always seeds as nnx.Rngs(0) unless a caller explicitly overrides it (nothing in this
-# repo does). Qm9NmrDataModule.load_split() replays that same split computation using
+# repo does). Qm9NmrDataset.load_split() replays the run's split strategy using
 # only the file COUNT (cheap: no parsing) and then extracts/parses just the requested
 # split's `.log` files — no saved seed or index list required, and no need to pay for
 # extracting the other splits, as long as the underlying data files (and `limit`) are
@@ -582,21 +599,16 @@ if SPLIT not in ("train", "val", "test", "full"):
     sys.exit(f"SPLIT must be one of 'train'/'val'/'test'/'full', got {SPLIT!r}")
 
 print(f"\nLoading the '{SPLIT}' split from {os.path.basename(RUN_DIR)}'s config …")
-extra = dict(data_dir=DATA_DIR)
+dataset_kwargs["data_dir"] = DATA_DIR
 if LIMIT is not None:
-    extra["limit"] = LIMIT
-datamodule = hydra.utils.instantiate(cfg.data, **extra, _convert_="object")
+    dataset_kwargs["limit"] = LIMIT
 
 if SPLIT == "full":
-    active_dataset = qm9_nmr.Qm9NmrDataset(
-        r_max=datamodule._rmax,
-        data_dir=datamodule._data_dir,
-        dataset=datamodule._dataset,
-        atom_keys=datamodule._atom_keys,
-        limit=datamodule._limit,
-    )
+    active_dataset = qm9_nmr.Qm9NmrDataset(**dataset_kwargs)
 else:
-    active_dataset = datamodule.load_split(SPLIT, limit=SPLIT_LIMIT)
+    active_dataset = qm9_nmr.Qm9NmrDataset.load_split(
+        SPLIT, strategy, split_limit=SPLIT_LIMIT, **dataset_kwargs
+    )
 print(f"  {len(active_dataset)} molecules in the '{SPLIT}' split.")
 
 # ── STEP 1: Ground truth ───────────────────────────────────────────────────────

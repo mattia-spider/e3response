@@ -3,9 +3,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 import reax
+from tensorial import gcnn
 from tensorial.gcnn import atomic
 
-from e3response.data.qm9_nmr import DATASET_URLS, Qm9NmrDataModule, Qm9NmrDataset
+from e3response.data.qm9_nmr import DATASET_URLS, Qm9NmrDataset
 
 mock_dir = Path(__file__).parent / "mock_datasets" / "qm9_nmr"
 
@@ -52,39 +53,7 @@ def test_qm9_nmr_dataset(dataset_name):
         ), f"'{atomic.TOTAL_ENERGY}' in graph {i} is NaN for dataset {dataset_name}"
 
 
-@pytest.mark.parametrize("dataset_name", list(DATASET_URLS.keys()))
-def test_qm9_nmr_datamodule(dataset_name, test_engine):
-    dm = Qm9NmrDataModule(
-        dataset=dataset_name, train_val_test_split=(0.6, 0.2, 0.2), batch_size=1, data_dir=mock_dir
-    )
-
-    class DummyStage(reax.Stage):
-        def __init__(self):
-            super().__init__(
-                name="dummystage",
-                module=None,
-                engine=test_engine,
-                rngs=test_engine.rngs,
-            )
-
-        def _step(self):
-            return {}
-
-        def log(
-            self,
-            name,
-            value,
-            batch_size=None,
-            prog_bar=None,
-            logger=None,
-            on_step=None,
-            on_epoch=None,
-            reduce_fn: "reax.types.ReduceFn" = "mean",
-        ):
-            pass
-
-    dm.setup(DummyStage())
-
+def _check_loaders(dm):
     for loader_fn in ["train_dataloader", "val_dataloader", "test_dataloader"]:
         loader = getattr(dm, loader_fn)()
         batch_tuple = next(iter(loader))
@@ -129,3 +98,60 @@ def test_qm9_nmr_datamodule(dataset_name, test_engine):
         energy = batch.globals[atomic.TOTAL_ENERGY]
         assert isinstance(energy, np.ndarray), f"'{atomic.TOTAL_ENERGY}' in {loader_fn} is not a numpy array"
         assert not np.any(np.isnan(energy)), f"'{atomic.TOTAL_ENERGY}' in {loader_fn} contains NaNs"
+
+
+@pytest.mark.parametrize("dataset_name", list(DATASET_URLS.keys()))
+def test_qm9_nmr_datamodule(dataset_name, test_engine):
+    dm = gcnn.data.GraphDataModule.from_random_split(
+        Qm9NmrDataset(dataset=dataset_name, data_dir=mock_dir),
+        train_val_test_split=(0.6, 0.2, 0.2),
+        batch_size=1,
+    )
+    dm.prepare_data()
+    dm.setup(test_engine)
+    _check_loaders(dm)
+
+
+def test_qm9_nmr_datamodule_kfold(test_engine):
+    dm = gcnn.data.GraphDataModule.from_kfold(
+        Qm9NmrDataset(dataset="gasphase", data_dir=mock_dir),
+        fold=1,
+        n_folds=2,
+        test_fraction=0.2,
+        batch_size=1,
+    )
+    dm.prepare_data()
+    dm.setup(test_engine)
+    # 5 structures: 1 for test, the other 4 in 2 folds of 2
+    assert (len(dm.data_train), len(dm.data_val), len(dm.data_test)) == (2, 2, 1)
+    _check_loaders(dm)
+
+
+def _positions(graphs) -> list[np.ndarray]:
+    return [np.asarray(graph.nodes["positions"]) for graph in graphs]
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        gcnn.data.RandomSplit((0.6, 0.2, 0.2)),
+        gcnn.data.KFoldSplit(fold=1, n_folds=3, test_fraction=0.2),
+    ],
+    ids=["random", "kfold"],
+)
+def test_qm9_nmr_load_split(strategy):
+    """`load_split` parses exactly the structures `GraphDataModule` puts in each split."""
+    kwargs = dict(dataset=["gasphase", "THF"], data_dir=mock_dir)
+    dm = gcnn.data.GraphDataModule(Qm9NmrDataset(**kwargs), strategy, batch_size=1)
+    dm.prepare_data()
+    dm.setup(reax.Engine())
+
+    for split, graphs in zip(("train", "val", "test"), (dm.data_train, dm.data_val, dm.data_test)):
+        loaded = Qm9NmrDataset.load_split(split, strategy, **kwargs)
+        assert len(loaded) == len(graphs) > 0
+        for expected, actual in zip(_positions(graphs), _positions(loaded)):
+            np.testing.assert_array_equal(expected, actual)
+
+    assert len(Qm9NmrDataset.load_split("train", strategy, split_limit=1, **kwargs)) == 1
+    with pytest.raises(ValueError):
+        Qm9NmrDataset.load_split("validation", strategy, **kwargs)

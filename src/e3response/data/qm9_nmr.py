@@ -7,6 +7,7 @@ import os
 import pathlib
 import re
 import tempfile
+import types
 from typing import Any, Callable, Final, Optional, Sequence, Union
 
 import urllib.error
@@ -19,16 +20,14 @@ import jraph
 import numpy as np
 from pymatgen.io import gaussian  # type: ignore
 import pymatgen.io.ase  # type: ignore
-import reax
 from tensorial import gcnn
 from tensorial.gcnn import atomic
 import tqdm
-from typing_extensions import override
 
 from e3response import keys
 from e3response.data._limit import apply_limit
 
-__all__ = ("Qm9NmrDataset", "Qm9NmrDataModule")
+__all__ = ("Qm9NmrDataset",)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -89,7 +88,7 @@ class Qm9NmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
               resulting dataset has indices 0–19.
         :param indices: If given, restrict the dataset to exactly these positions
             within the `limit`-selected file list (e.g. the scattered indices of one
-            train/val/test split — see `Qm9NmrDataModule.load_split`). Only the
+            train/val/test split — see `load_split`). Only the
             selected ``.log`` files are read/parsed. ``None`` (default) loads everything in
             `limit`.
         """
@@ -278,13 +277,66 @@ class Qm9NmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
     ) -> int:
         """Cheaply count how many structures `(dataset, limit)` selects, without parsing
         any ``.log`` files. Useful for computing a train/val/test split ahead of loading,
-        so only the wanted split's files need to be extracted (see
-        `Qm9NmrDataModule.load_split`)."""
+        so only the wanted split's files need to be extracted (see `load_split`)."""
         names = [dataset] if isinstance(dataset, str) else list(dataset)
         return sum(
             len(cls._list_log_files(cls._ensure_archive(data_dir, ds), limit=limit))
             for ds in names
         )
+
+    @classmethod
+    def load_split(
+        cls,
+        split: str,
+        strategy: "gcnn.data.SplitStrategy[gcnn.data.GraphDataset]",
+        *,
+        split_limit: int | str | None = None,
+        rngs: "nnx.Rngs | None" = None,
+        **kwargs,
+    ) -> "Qm9NmrDataset":
+        """Load only the requested split ("train"/"val"/"test"), extracting just its
+        ``.log`` files.
+
+        Training (`gcnn.data.GraphDataModule`) must extract the full `limit`-restricted
+        archive because it needs all three splits at once; this instead replays
+        `strategy` on the file *count* and only parses the files belonging to the
+        requested split. Useful for post-hoc analysis (e.g. recovering exactly which
+        structures were held out at test time for an already-trained run) without
+        paying for the rest of the dataset.
+
+        :param split: which partition to load: "train", "val" or "test".
+        :param strategy: the `gcnn.data.SplitStrategy` used at training time, e.g.
+            ``gcnn.data.RandomSplit(...)`` or ``gcnn.data.KFoldSplit(...)``.
+        :param split_limit: like `limit`, but applied to the split's indices instead of
+            the whole dataset — e.g. ``split_limit=20`` loads only the first 20
+            structures of the split, ``"10:30"`` loads structures 10-29 of it. ``None``
+            (default) loads the whole split.
+        :param rngs: must match whatever was used at training time to reproduce the
+            SAME split; defaults to `nnx.Rngs(0)`, REAX's own default when no
+            `Trainer`/`Engine` override is given.
+        :param kwargs: the `Qm9NmrDataset` arguments used at training time (`r_max`,
+            `data_dir`, `dataset`, `atom_keys`, `limit`).
+        """
+        if split not in ("train", "val", "test"):
+            raise ValueError(f"split must be 'train', 'val' or 'test', got {split!r}")
+        if "indices" in kwargs:
+            raise TypeError("load_split() selects the indices itself, do not pass `indices`")
+        if rngs is None:
+            rngs = nnx.Rngs(0)
+
+        n = cls.count(
+            kwargs.get("data_dir", "data/qm9_nmr/"),
+            kwargs.get("dataset", "gasphase"),
+            kwargs.get("limit"),
+        )
+        # Splitting `range(n)` yields the positions themselves; strategies only read
+        # `engine.rngs`, so a stand-in engine carrying `rngs` is enough.
+        subset = getattr(strategy.split(range(n), types.SimpleNamespace(rngs=rngs)), split)
+        if subset is None:
+            raise ValueError(f"{strategy!r} produces no {split!r} split")
+        indices = apply_limit([int(i) for i in subset], split_limit)
+
+        return cls(**kwargs, indices=indices)
 
 
 # pylint: disable=R1710
@@ -417,195 +469,3 @@ def get_structure_and_data_from_log(log_path: pathlib.Path) -> ase.Atoms | None:
     except (ValueError, OSError) as e:
         _LOGGER.error("Parsing error for %s: %s", log_path, e)
     return None
-
-
-class Qm9NmrDataModule(reax.DataModule):
-    """
-    QM9-NMR data module containing graphs with full NMR tensors
-    and related quantities subdivided in train/val/test and batches.
-    """
-
-    _max_padding: gcnn.data.GraphPadding = None
-
-    def __init__(
-        self,
-        r_max: float = 5,
-        data_dir: str | pathlib.Path = "data/qm9_nmr/",
-        dataset: str | Sequence[str] = "gasphase",
-        atom_keys: Sequence[str] | None = None,
-        limit: int | str | None = None,
-        train_val_test_split: Sequence[int | float] = (0.85, 0.05, 0.1),
-        batch_size: int = 64,
-    ) -> None:
-        """Initialize a QM9-NMR data module.
-
-        :param r_max: Maximum cutoff radius for graph construction.
-        :param data_dir: Directory where dataset archives are stored.
-        :param dataset: List of dataset names containing gaussian raw data.
-        :param tensors: Name(s) of tensor(s) to extract, either a string
-                        (for one tensor) or a list/tuple of strings.
-        :param limit: Maximum number of structures to load as graphs.
-        :param train_val_test_split: The train, validation and test split.
-        :param batch_size: The batch size. Defaults to 64.
-        """
-        super().__init__()
-
-        # Params
-        self._data_dir: Final[pathlib.Path] = pathlib.Path(data_dir)
-        self._dataset: str | Sequence[str] = dataset
-        self.dataset: Qm9NmrDataset | None = None
-        self._rmax = r_max
-        self._atom_keys = atom_keys
-        self._limit = limit
-        self._train_val_test_split: Final[Sequence[int | float]] = train_val_test_split
-        self._batch_size: Final[int] = batch_size
-
-        # State
-        self.batch_size_per_device = batch_size
-        self.data_train: reax.data.Dataset | None = None
-        self.data_val: reax.data.Dataset | None = None
-        self.data_test: reax.data.Dataset | None = None
-
-    @override
-    def setup(self, stage: "reax.Stage", /) -> None:
-        """Load data. Set variables: self.data_train, self.data_val, self.data_test.
-
-        This method is called by REAX before trainer.fit(), trainer.validate(),
-        trainer.test(), and trainer.predict(), so be careful not to execute things like random
-        split twice! Also, it is called after self.prepare_data() and there is a barrier in
-        between which ensures that all the processes proceed to self.setup() once the data is
-        prepared and available for use.
-
-        :param stage: The stage to setup. Either "fit", "validate", "test", or "predict".
-        Defaults to `None.
-        """
-
-        if self.dataset is None:
-            self.dataset = Qm9NmrDataset(
-                r_max=self._rmax,
-                data_dir=self._data_dir,
-                dataset=self._dataset,
-                atom_keys=self._atom_keys,
-                limit=self._limit,
-            )
-
-        # load and split dataset only if not loaded already
-        if not self.data_train and not self.data_val and not self.data_test:
-
-            # Split up the graphs into sets
-            train, val, test = reax.data.random_split(
-                stage.rngs, dataset=self.dataset, lengths=self._train_val_test_split
-            )
-
-            calc_padding = functools.partial(
-                gcnn.data.GraphBatcher.calculate_padding,
-                batch_size=self._batch_size,
-                with_shuffle=True,
-            )
-
-            paddings = list(map(calc_padding, (train, val, test)))
-            # Calculate the max padding we will need for any of the batches
-            self._max_padding = gcnn.data.max_padding(*paddings)
-
-            self.data_train = train
-            self.data_val = val
-            self.data_test = test
-
-    def load_split(
-        self,
-        split: str,
-        limit: int | str | None = None,
-        rngs: "nnx.Rngs | None" = None,
-    ) -> "Qm9NmrDataset":
-        """Load only the requested split ("train"/"val"/"test"), extracting just its
-        ``.log`` files.
-
-        Unlike `setup()` — which must extract the full `limit`-restricted archive
-        because training needs all three splits at once — this only parses the files
-        belonging to the requested split. Useful for post-hoc analysis (e.g. recovering
-        exactly which structures were held out at test time for an already-trained run)
-        without paying for the rest of the dataset.
-
-        :param split: which partition to load: "train", "val" or "test".
-        :param limit: like `Qm9NmrDataset`'s own `limit`, but applied to the split's
-            indices instead of the whole dataset — e.g. `limit=20` loads only the
-            first 20 structures of the split, `"10:30"` loads structures 10-29 of it.
-            `None` (default) loads the whole split.
-        :param rngs: must match whatever was used at training time to reproduce the
-            SAME split; defaults to `nnx.Rngs(0)`, REAX's own default when no
-            `Trainer`/`Engine` override is given.
-        """
-        if split not in ("train", "val", "test"):
-            raise ValueError(f"split must be 'train', 'val' or 'test', got {split!r}")
-        if rngs is None:
-            rngs = nnx.Rngs(0)
-
-        n = Qm9NmrDataset.count(self._data_dir, self._dataset, self._limit)
-        splits = reax.data.random_split(rngs, dataset=range(n), lengths=self._train_val_test_split)
-        indices = dict(zip(("train", "val", "test"), splits))[split].indices
-        indices = apply_limit(indices, limit)
-
-        return Qm9NmrDataset(
-            r_max=self._rmax,
-            data_dir=self._data_dir,
-            dataset=self._dataset,
-            atom_keys=self._atom_keys,
-            limit=self._limit,
-            indices=indices,
-        )
-
-    @override
-    def train_dataloader(self) -> reax.DataLoader:
-        """Create and return the train dataloader.
-
-        :return: The train dataloader.
-        """
-        if self.data_train is None:
-            raise reax.exceptions.MisconfigurationException(
-                "Must call setup() before requesting the dataloader"
-            )
-
-        return gcnn.data.GraphLoader(
-            self.data_train,
-            batch_size=self._batch_size,
-            padding=self._max_padding,
-            pad=True,
-        )
-
-    @override
-    def val_dataloader(self) -> reax.DataLoader:
-        """Create and return the validation dataloader.
-
-        :return: The validation dataloader.
-        """
-        if self.data_val is None:
-            raise reax.exceptions.MisconfigurationException(
-                "Must call setup() before requesting the dataloader"
-            )
-
-        return gcnn.data.GraphLoader(
-            self.data_val,
-            batch_size=self.batch_size_per_device,
-            shuffle=False,
-            padding=self._max_padding,
-            pad=True,
-        )
-
-    @override
-    def test_dataloader(self) -> reax.DataLoader:
-        """Create and return the test dataloader.
-
-        :return: The test dataloader.
-        """
-        if self.data_test is None:
-            raise reax.exceptions.MisconfigurationException(
-                "Must call setup() before requesting the dataloader"
-            )
-
-        return gcnn.data.GraphLoader(
-            self.data_test,
-            batch_size=self.batch_size_per_device,
-            shuffle=False,
-            padding=self._max_padding,
-            pad=True,
-        )

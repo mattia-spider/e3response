@@ -1,5 +1,5 @@
 # BTO direct model: separate equivariant readouts for the Born charges, Raman tensors and
-# dielectric tensor.  Same stack and losses as nequip_sobolev.yaml.
+# dielectric tensor.  Same stack and losses as nequip_bto_sobolev.yaml.
 _target_: tensorial.ReaxModule
 
 optimizer:
@@ -29,7 +29,7 @@ metrics:
     predictions: globals.predicted_dielectric_tensor
     targets: globals.dielectric_tensor
 
-# Same weights in nequip_direct_tensors.yaml and nequip_sobolev.yaml; override both with
+# Same weights in nequip_bto_direct.yaml and nequip_bto_sobolev.yaml; override both with
 # e.g. `++w_born=1000 ++w_raman=1 ++w_dielectric=100`
 loss_fn:
   _target_: tensorial.gcnn.WeightedLoss
@@ -77,21 +77,21 @@ model:
     - _target_: tensorial.gcnn.RadialBasisEdgeEncoding
       r_max: ${r_max}
 
-    # Hidden irreps: ${mul} channels of every irrep up to ${ell_max} (both parities), see
+    # Hidden irreps: ${oc.select:mul,16} channels of every irrep up to ${oc.select:ell_max,2} (both parities), see
     # tensorial.make_irreps.  mul, ell_max and num_layers are set in train.yaml.
     - _target_: tensorial.gcnn.NodewiseLinear
       field: attributes
       irreps_out:
         _target_: tensorial.make_irreps
-        mul: ${mul}
-        ell_max: ${ell_max}
+        mul: ${oc.select:mul,16}
+        ell_max: ${oc.select:ell_max,2}
 
     - _target_: tensorial.gcnn.Nequip
       hidden_irreps:
         _target_: tensorial.make_irreps
-        mul: ${mul}
-        ell_max: ${ell_max}
-      num_layers: ${num_layers}
+        mul: ${oc.select:mul,16}
+        ell_max: ${oc.select:ell_max,2}
+      num_layers: ${oc.select:num_layers,3}
       avg_num_neighbours: ${from_data.avg_num_neighbours}
 
     # Keep only scalars and reduce the number passing this point

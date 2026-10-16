@@ -1,0 +1,44 @@
+# @package _global_
+
+# Direct vs Sobolev comparison on BTO: the same NequIP stack, data, split and losses, differing
+# only in how the labelled tensors are produced.
+#
+#   direct:   e3response train -i configs/train.yaml experiment=bto_sobolev_vs_direct model=nequip_bto_direct
+#   sobolev:  e3response train -i configs/train.yaml experiment=bto_sobolev_vs_direct model=nequip_bto_sobolev
+#
+# nequip_bto_direct reads Born charges, Raman tensors and the dielectric tensor out of
+# separate equivariant heads; nequip_bto_sobolev reads out only an energy and obtains all three by
+# linked differentiation (e3response.electric_linked).  Neither has energy, force or
+# polarization labels to train on, as the BTO data has none.
+
+defaults:
+  - override /data: bto
+
+data:
+  dataset:
+    # 33 of the 228 structures have one dielectric eigenvalue near -64 (failed calculations)
+    drop_unphysical_dielectric: True
+
+# Loss weights, read by both model configs.  Born charges are O(1) and fitted most tightly; the
+# Raman weight is raised from the lab's 1 so that it is not drowned by the other two.
+w_born: 1000.
+w_raman: 10.
+w_dielectric: 100.
+
+# Sobolev model only: units of the field inside the network (see nequip_bto_sobolev.yaml)
+field_scale: 100.
+
+# Every component must be reachable by the direct heads: Born charges and the dielectric tensor
+# need 2e, Raman tensors 2o and 3o, so l up to 3
+ell_max: 3
+
+train:
+  check_val_every_n_epoch: 5
+
+# The default listeners watch an NMR metric: keep the best checkpoint and stop early on the
+# weighted total, which every model here logs
+listeners:
+  model_checkpoint:
+    monitor: "val/loss"
+  early_stopping:
+    monitor: "val/loss"

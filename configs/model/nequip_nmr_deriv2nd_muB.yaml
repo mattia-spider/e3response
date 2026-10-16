@@ -1,0 +1,149 @@
+_target_: tensorial.ReaxModule
+
+metrics:
+    nmr_tensors_rmse:
+      _target_: tensorial.gcnn.graph_metric
+      metric: rmse
+      predictions: nodes.predicted_nmr_tensors
+      targets: nodes.nmr_tensors
+
+    energy_rmse:
+      _target_: tensorial.gcnn.graph_metric
+      metric: rmse
+      predictions: globals.predicted_energy
+      targets: globals.energy
+
+    # Per-species NMR RMSE for every species in the type map gathered from the data, logged as
+    # nmr_rmse_<symbol> (nmr_rmse_H, nmr_rmse_C, ...).  Add `species: [1, 6]` to keep only some
+    nmr_rmse:
+      _target_: tensorial.gcnn.species_metrics
+      metric: rmse
+      predictions: nodes.predicted_nmr_tensors
+      targets: nodes.nmr_tensors
+      atomic_numbers: ${from_data.atomic_numbers}
+
+optimizer:
+  _target_: optax.chain
+  _args_:
+    # Adam first: reduce_on_plateau scales whatever it is handed, and Adam's m/(sqrt(v)+eps)
+    # is scale invariant, so putting the plateau first only starves Adam once the scale
+    # underflows against eps -- which freezes training instead of decaying it.
+    - _target_: optax.adam
+      learning_rate: 0.01
+
+    - _target_: optax.contrib.reduce_on_plateau
+      factor: 0.9
+      # reax feeds the per-minibatch training loss, so aggregate exactly one epoch of them
+      # before judging a plateau; `patience` and `cooldown` are then counted in epochs, and
+      # stay correct if the batch size or the dataset size changes
+      accumulation_size: ${from_data.steps_per_epoch}
+      patience: 20
+      rtol: 0.0001
+      atol: 0.001
+      cooldown: 5
+      min_scale: 1.0e-6
+
+loss_fn:
+  _target_: e3response.losses.response_loss
+  energy: true
+  nmr_tensors: true
+  # L2 on the intermediate B_ind, which has no ground truth; see losses.L2Regularization
+  induced_magnetic_field: true
+
+model:
+  _target_: tensorial.nn.Sequential
+  layers:
+    - _target_: tensorial.gcnn.atomic.SpeciesTransform
+      atomic_numbers: ${from_data.atomic_numbers}
+
+    - _target_: tensorial.gcnn.NodewiseEncoding
+      attrs:
+        species:
+          _target_: tensorial.tensors.OneHot
+          num_classes: ${from_data.n_elements}
+        globals.external_magnetic_field:
+          _target_: tensorial.tensors.SphericalHarmonic
+          irreps: 1e
+          normalise: False
+        # The energy has to depend on mu for dE/dmu to be anything other than zero.
+        # InducedMagneticField writes this field into the graph before the stack runs,
+        # so it does not need to come from the dataset.
+        nuclear_magnetic_moment:
+          _target_: tensorial.tensors.SphericalHarmonic
+          irreps: 1e
+          normalise: False
+
+    # mu (x) B (0e + 1e + 2e) appended to the attributes before the first NodewiseLinear, so the
+    # energy has an explicit bilinear mu x B path (see tests/verifica).  Zero at mu = B = 0.
+    - _target_: e3response.nodewise_product.NodewiseFieldProduct
+      scale: ${oc.select:muB_scale,1.0}
+
+    - _target_: tensorial.gcnn.EdgeVectors
+
+    - _target_: tensorial.gcnn.EdgewiseEncoding
+      attrs:
+        edge_vectors:
+          _target_: tensorial.tensors.SphericalHarmonic
+          irreps:
+            _target_: tensorial.make_irreps
+            mul: 1
+            ell_max: ${oc.select:ell_max,2}
+            parity: sh
+          normalise: True
+
+    - _target_: tensorial.gcnn.RadialBasisEdgeEncoding
+      r_max: ${r_max}
+
+    # Hidden irreps: `mul` channels of every irrep up to `ell_max`, see
+    # tensorial.make_irreps.  Override per run, e.g. `mul=16 ell_max=3 num_layers=4`.
+    # Reduce the number passing this point
+    - _target_: tensorial.gcnn.NodewiseLinear
+      field: attributes
+      irreps_out:
+        _target_: tensorial.make_irreps
+        mul: ${oc.select:mul,8}
+        ell_max: ${oc.select:ell_max,2}
+        parity: e + o
+
+    - _target_: tensorial.gcnn.Nequip
+      hidden_irreps:
+        _target_: tensorial.make_irreps
+        mul: ${oc.select:mul,8}
+        ell_max: ${oc.select:ell_max,2}
+        parity: e + o
+      num_layers: ${oc.select:num_layers,3}
+      num_species: ${from_data.n_elements}
+      avg_num_neighbours: ${from_data.avg_num_neighbours}
+
+    # The energy readout below is a scalar and a linear map cannot change l or parity, so only
+    # the 0e channels survive.  The mu / B_ext dependence is already mixed into these scalars
+    # by the Nequip layers above.
+    - _target_: tensorial.gcnn.NodewiseLinear
+      irreps_out: ${oc.select:mul_readout,4}x0e
+
+    - _target_: tensorial.gcnn.NodewiseLinear
+      irreps_out: 1x0e
+      out_field: energy # Per-atom energy
+
+    # Per-species baseline, so the energy head learns residuals rather than the ~-408 offset.
+    # A pure shift is constant in mu, so B_ind = dE/dmu and the NMR tensors are untouched.
+    - _target_: tensorial.gcnn.atomic.per_species_rescale
+      num_types: ${from_data.n_elements}
+      field: nodes.energy
+      out_field: nodes.energy
+      shifts: ${from_data.energy_shifts}
+      scales: 1.0 # pin it: a learnable scale would rescale dE/dmu per species
+
+    # Total energy
+    - _target_: tensorial.gcnn.NodewiseReduce
+      field: energy
+      out_field: predicted_energy
+      as_array: True # GraphMetric has no as_array() of its own, unlike gcnn.Loss  
+
+    # Per-atom induced field, B_ind = dE/dmu, evaluated at mu = 0
+    - _target_: e3response.magnetic.InducedMagneticField
+      _partial_: True
+
+    # Per atom NMR tensors, sigma = dB_ind/dB_ext, evaluated at B_ext = 0
+    - _target_: e3response.magnetic.MagneticShieldingTensor
+      _partial_: True

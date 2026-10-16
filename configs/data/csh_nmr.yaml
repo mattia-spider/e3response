@@ -1,5 +1,14 @@
-_target_: e3response.data.csh_nmr.CshNmrDataModule
-r_max: ${r_max}
+# Split stratified by structure type (bulk/surface), so every partition holds them in the same
+# ratio.  For a plain random split use `_target_: tensorial.gcnn.data.RandomSplit` with the
+# same `fractions`; for k-fold cross-validation `_target_: tensorial.gcnn.data.KFoldSplit` with
+# `fold`, `n_folds` and `test_fraction` (not stratified).
+_target_: tensorial.gcnn.data.GraphDataModule
+dataset:
+  _target_: e3response.data.csh_nmr.CshNmrDataset
+  r_max: ${r_max}
+  data_file: ${paths.data_dir}/csh_nmr/Na_csh.json
+  limit: bulk
+strategy:
+  _target_: e3response.data.GroupedRandomSplit
+  fractions: [0.80, 0.10, 0.10]
 batch_size: 10 # Needs to be divisible by the number of devices (e.g., if in a distributed setup)
-train_val_test_split: [0.80, 0.10, 0.10]
-limit: bulk

@@ -19,7 +19,9 @@ def test_load_train(model):
 
     with hydra.initialize_config_dir(version_base=None, config_dir=str(CONFIG_PATH)):
         cfg = hydra.compose(config_name="train", overrides=[f"model={model}", "data=bto"])
-        datamodule = e3response.data.BtoDataModule(r_max=5.0, data_dir=DATA_PATH / "bto")
+        datamodule = tensorial.gcnn.data.GraphDataModule.from_random_split(
+            e3response.data.BtoDataset(r_max=5.0, data_dir=DATA_PATH / "bto"), batch_size=8
+        )
         from_data = rkit.FromData(
             cfg["from_data"],
             engine=trainer.engine,

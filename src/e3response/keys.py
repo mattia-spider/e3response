@@ -7,6 +7,7 @@ from tensorial.gcnn.keys import *  # We want all graph keys pylint: disable=wild
 # Electric
 EXTERNAL_ELECTRIC_FIELD: Final[str] = "external_electric_field"
 POLARIZATION: Final[str] = "polarization"
+DIPOLE_MOMENT: Final[str] = "dipole_moment"
 POLARIZABILITY: Final[str] = "polarizability"
 DIELECTRIC_TENSOR: Final[str] = "dielectric_tensor"
 BORN_CHARGES: Final[str] = "born_charges"

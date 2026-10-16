@@ -23,6 +23,47 @@ PositionsArray = jt.Float[tt.ArrayType, "num_atoms γ"]
 BornEffectiveChargesArray = jt.Float[tt.ArrayType, "num_atoms α γ"]
 RamanTensorsArray = jt.Float[tt.ArrayType, "num_atoms γ α β"]
 
+# Choice of AD modes.  `gcnn.diff` applies one mode to a whole chain of derivatives, and only the
+# last link sees the requested `out`: the inner links keep the per-graph index g of the energy.
+# Differentiating with respect to the electric field (3 components, shared by the batch) is cheap
+# in forward mode (3 JVPs) but costs one VJP per graph in reverse mode, whereas differentiating
+# with respect to the positions (3 per atom) is cheap in reverse mode on the energy summed over the
+# batch (1 VJP) but costs 3 JVPs per atom in forward mode.  So a mixed field/position derivative
+# is split in two: the position gradient in reverse mode, wrapped by the field derivatives in
+# forward mode, which keeps its cost independent of the batch size.
+
+# Where the position gradient of the energy is stored while the field derivatives wrap it
+_ENERGY_POSITION_GRADIENT = "_energy_position_gradient"
+
+
+def _energy_position_gradient(energy_fn: gcnn.GraphFunction, energy_key: str):
+    """Return a graph function that stores ∂E/∂u_{iγ} in the nodes, from a single VJP.
+
+    The per-graph index of the energy is dropped from the output, so `gcnn.diff` sums the energy
+    over the batch before differentiating; each atom only enters its own graph's energy, so this
+    is the per-graph gradient.
+    """
+    gradient = gcnn.diff(
+        energy_fn,
+        f"globals.{energy_key}:gk",
+        wrt=[f"nodes.{keys.POSITIONS}:Iγ"],
+        out=":Iγ",
+        return_graph=True,
+        mode="rev",
+    )
+
+    def energy_position_gradient(graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
+        value, graph = gradient(
+            graph, **{f"nodes.{keys.POSITIONS}": graph.nodes[gcnn.keys.POSITIONS]}
+        )
+        return (
+            gcnn.experimental.update_graph(graph)
+            .set(("nodes", _ENERGY_POSITION_GRADIENT), value)
+            .get()
+        )
+
+    return energy_position_gradient
+
 
 class Polarization(linen.Module):
     """
@@ -70,6 +111,9 @@ class Polarization(linen.Module):
     energy_key: str = predicted(atomic.keys.ENERGY)
     electric_field_key: str = keys.EXTERNAL_ELECTRIC_FIELD
     out_key: str = predicted(keys.POLARIZATION)
+    # One polarization per graph from a 3-component field: 3 JVPs in forward mode, one VJP per
+    # graph in reverse mode
+    mode: str = "fwd"
 
     def setup(self) -> None:
         # pylint: disable=attribute-defined-outside-init
@@ -81,13 +125,13 @@ class Polarization(linen.Module):
             at={f"globals.{self.electric_field_key}": jnp.zeros(3)},
             out=":gα",
             return_graph=True,
+            mode=self.mode,
         )
 
     def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
-        polarization, graph = self._diff_fn(
-            graph, jnp.zeros_like(graph.globals[keys.EXTERNAL_ELECTRIC_FIELD])
-        )
-        polarization: PolarizationArray = polarization
+        # Evaluated at zero field through `at`, so no value is passed here
+        derivative, graph = self._calc(graph)
+        polarization: PolarizationArray = -derivative  # P = -∂E/∂ε
 
         if gcnn.keys.CELL in graph.globals:
             # Normalize to get polarization per unit volume
@@ -162,6 +206,10 @@ class DielectricTensor(linen.Module):
     include_identity: bool = True
     out_key: str = predicted(keys.DIELECTRIC_TENSOR)
     epsilon_0 = 1.0 / (4.0 * math.pi)  # If using atomic units
+    # Both derivatives are with respect to the 3-component field and the result keeps one tensor
+    # per graph: 9 JVPs in forward mode, while reverse mode needs one VJP per graph (and per
+    # component for the second derivative)
+    mode: str = "fwd"
 
     def setup(self) -> None:
         # pylint: disable=attribute-defined-outside-init
@@ -172,6 +220,7 @@ class DielectricTensor(linen.Module):
             at={f"globals.{self.electric_field_key}": jnp.zeros(3)},
             out=":gαβ",
             return_graph=True,
+            mode=self.mode,
         )
 
     def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
@@ -240,20 +289,20 @@ class BornCharges(linen.Module):
 
     def setup(self) -> None:
         # pylint: disable=attribute-defined-outside-init
-        # Define the derivative of the energy
+        # Forward-mode field derivative of the reverse-mode position gradient (see the note at the
+        # top of the module): 3 JVPs over 1 VJP, whatever the batch size
         self._diff_fn = gcnn.diff(
-            self.energy_fn,
-            f"globals.{self.energy_key}:gk",
-            wrt=[f"globals.{self.electric_field_key}:α", f"nodes.{keys.POSITIONS}:Iγ"],
+            _energy_position_gradient(self.energy_fn, self.energy_key),
+            f"nodes.{_ENERGY_POSITION_GRADIENT}:Iγ",
+            wrt=[f"globals.{self.electric_field_key}:α"],
             at={f"globals.{self.electric_field_key}": jnp.zeros(3)},
             out=":Iαγ",
             return_graph=True,
+            mode="fwd",
         )
 
     def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
-        derivative, graph = self._diff_fn(
-            graph, **{f"nodes.{keys.POSITIONS}": graph.nodes[gcnn.keys.POSITIONS]}
-        )
+        derivative, graph = self._diff_fn(graph)
         bec: BornEffectiveChargesArray = -derivative
 
         return (
@@ -306,24 +355,20 @@ class RamanTensors(linen.Module):
 
     def setup(self) -> None:
         # pylint: disable=attribute-defined-outside-init
-        # Define the derivative of the energy
+        # Two forward-mode field derivatives of the reverse-mode position gradient (see the note at
+        # the top of the module): 9 JVPs over 1 VJP, whatever the batch size
         self._diff_fn = gcnn.diff(
-            self.energy_fn,
-            f"globals.{self.energy_key}:gk",
-            wrt=[
-                f"globals.{self.electric_field_key}:α",
-                f"globals.{self.electric_field_key}:β",
-                f"nodes.{keys.POSITIONS}:Iγ",
-            ],
+            _energy_position_gradient(self.energy_fn, self.energy_key),
+            f"nodes.{_ENERGY_POSITION_GRADIENT}:Iγ",
+            wrt=[f"globals.{self.electric_field_key}:α", f"globals.{self.electric_field_key}:β"],
             at={f"globals.{self.electric_field_key}": jnp.zeros(3)},
             out=":Iγαβ",
             return_graph=True,
+            mode="fwd",
         )
 
     def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
-        derivative, graph = self._diff_fn(
-            graph, **{f"nodes.{keys.POSITIONS}": graph.nodes[gcnn.keys.POSITIONS]}
-        )
+        derivative, graph = self._diff_fn(graph)
         raman: RamanTensorsArray = -derivative
 
         return (

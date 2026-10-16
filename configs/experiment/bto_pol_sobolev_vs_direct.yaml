@@ -1,0 +1,41 @@
+# @package _global_
+
+# Direct vs Sobolev on allegro-pol's BaTiO3 (59 snapshots of 135 atoms, with energy, forces,
+# dipole moment, Born charges and polarizability):
+#
+#   direct:   e3response train -i configs/train.yaml experiment=bto_pol_sobolev_vs_direct model=nequip_bto_pol_direct
+#   sobolev:  e3response train -i configs/train.yaml experiment=bto_pol_sobolev_vs_direct model=nequip_bto_pol_sobolev
+#
+# Same stack, data, split and loss terms; only the readout differs.
+
+defaults:
+  - override /data: bto_allegro_pol
+
+from_data:
+  energy_shifts:
+    _target_: tensorial.gcnn.atomic.EnergyContributionLstsq
+    type_map: ${from_data.atomic_numbers}
+
+# Loss weights 1/σ², σ the spread of each label in the data that the model has to learn: the
+# energy about its mean (4.07 eV), forces (0.90 eV/Å), dipole moment (3.5 e·Å), Born charges
+# about one isotropic charge per species (0.63 e) and polarizability about its mean (0.46 e·Å²/V).
+# Each term then starts out as a relative error.
+w_energy: 0.06
+w_forces: 1.2
+w_dipole: 0.08
+w_born: 2.5
+w_polarizability: 4.8
+
+# Born charges need l = 2 features in a direct readout (their symmetric anisotropic part is 2e)
+ell_max: 2
+
+train:
+  check_val_every_n_epoch: 5
+
+# The default listeners watch an NMR metric: keep the best checkpoint and stop early on the
+# weighted total, which every model here logs
+listeners:
+  model_checkpoint:
+    monitor: "val/loss"
+  early_stopping:
+    monitor: "val/loss"

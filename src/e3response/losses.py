@@ -4,11 +4,81 @@ import jax
 import jax.numpy as jnp
 import jraph
 import optax
+import tensorial
 from tensorial import gcnn
 from tensorial.gcnn import atomic
 from tensorial.gcnn.keys import predicted
 
 from . import keys
+
+
+def nearest_image_target(
+    prediction: jax.Array, target: jax.Array, cell: jax.Array
+) -> jax.Array:
+    """Move each target dipole by whole lattice vectors (times e) to the image nearest the
+    prediction.
+
+    A periodic cell's dipole moment is only defined up to e·R for a lattice vector R, and datasets
+    store one branch of it (allegro-pol folds into about ±L/2), so a prediction on another branch
+    is not an error.  ``prediction`` and ``target`` are (n_graph, 3), ``cell`` (n_graph, 3, 3)
+    with the lattice vectors as rows.  Graphs with a zero cell (padding) keep their target.
+    """
+    ok = jnp.abs(jnp.linalg.det(cell)) > 0.0
+    safe_cell = jnp.where(ok[:, None, None], cell, jnp.eye(3))
+    frac = jnp.einsum("ga,gab->gb", prediction - target, jnp.linalg.inv(safe_cell))
+    shift = jax.lax.stop_gradient(jnp.round(frac))
+    moved = target + jnp.einsum("gb,gba->ga", shift, safe_cell)
+    return jnp.where(ok[:, None], moved, target)
+
+
+def _with_nearest_image(
+    predictions: jraph.GraphsTuple, targets: jraph.GraphsTuple, prediction_key: str, target_key: str
+) -> jraph.GraphsTuple:
+    prediction = tensorial.base.as_array(predictions.globals[prediction_key]).reshape(-1, 3)
+    target = jnp.asarray(targets.globals[target_key])
+    cell = jnp.asarray(targets.globals[gcnn.keys.CELL]).reshape(-1, 3, 3)
+    moved = nearest_image_target(prediction, target.reshape(-1, 3), cell).reshape(target.shape)
+    return targets._replace(globals={**targets.globals, target_key: moved})
+
+
+class FoldedDipoleLoss(gcnn.Loss):
+    """Squared error on a periodic cell's dipole moment, against the image of the target nearest
+    the prediction (see :func:`nearest_image_target`)."""
+
+    def __init__(
+        self,
+        targets: str = f"globals.{keys.DIPOLE_MOMENT}",
+        predictions: str = f"globals.{predicted(keys.DIPOLE_MOMENT)}",
+        *,
+        reduction: str = "mean",
+        label: str | None = None,
+    ):
+        super().__init__(optax.squared_error, targets, predictions, reduction=reduction, label=label)
+
+    def _call(self, predictions: jraph.GraphsTuple, targets: jraph.GraphsTuple) -> jax.Array:
+        targets = _with_nearest_image(
+            predictions, targets, self._prediction_field[-1], self._target_field[-1]
+        )
+        return super()._call(predictions, targets)
+
+
+def folded_dipole_metric(
+    metric: str = "rmse",
+    predictions: str = f"globals.{predicted(keys.DIPOLE_MOMENT)}",
+    targets: str = f"globals.{keys.DIPOLE_MOMENT}",
+):
+    """A :func:`tensorial.gcnn.graph_metric` on the dipole moment, against the nearest image of the
+    target, as :class:`FoldedDipoleLoss` uses."""
+    base = type(gcnn.graph_metric(metric, predictions, targets))
+    prediction_key, target_key = predictions.split(".")[-1], targets.split(".")[-1]
+
+    class _FoldedDipoleMetric(base):  # pylint: disable=too-few-public-methods
+        def create(self, predictions, targets=None):  # pylint: disable=arguments-differ
+            targets = predictions if targets is None else targets
+            targets = _with_nearest_image(predictions, targets, prediction_key, target_key)
+            return super().create(predictions, targets)
+
+    return _FoldedDipoleMetric()
 
 
 class L2Regularization(gcnn.Loss):

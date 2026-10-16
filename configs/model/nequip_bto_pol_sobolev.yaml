@@ -1,0 +1,162 @@
+# allegro-pol BaTiO3, Sobolev model: one energy readout; forces, dipole moment, Born charges and
+# polarizability are its linked derivatives.  Compare with nequip_bto_pol_direct.yaml, via
+# experiment/bto_pol_sobolev_vs_direct.yaml.
+
+_target_: tensorial.ReaxModule
+
+optimizer:
+  _partial_: True
+  _target_: optax.adam
+  learning_rate: 0.01
+
+metrics:
+  energy:
+    _target_: tensorial.gcnn.graph_metric
+    metric: rmse
+    predictions: globals.predicted_energy
+    targets: globals.energy
+  forces:
+    _target_: tensorial.gcnn.graph_metric
+    metric: rmse
+    predictions: nodes.predicted_forces
+    targets: nodes.forces
+  BEC:
+    _target_: tensorial.gcnn.graph_metric
+    metric: rmse
+    predictions: nodes.predicted_born_charges
+    targets: nodes.born_charges
+  polarizability:
+    _target_: tensorial.gcnn.graph_metric
+    metric: rmse
+    predictions: globals.predicted_polarizability
+    targets: globals.polarizability
+  # Against the nearest lattice image of the stored (folded) dipole
+  dipole:
+    _target_: e3response.losses.folded_dipole_metric
+    metric: rmse
+
+# Same terms and weights in nequip_bto_pol_direct.yaml and nequip_bto_pol_sobolev.yaml, set in
+# experiment/bto_pol_sobolev_vs_direct.yaml
+loss_fn:
+  _target_: tensorial.gcnn.WeightedLoss
+  weights:
+    - ${oc.select:w_energy,1.}
+    - ${oc.select:w_forces,1.}
+    - ${oc.select:w_dipole,1.}
+    - ${oc.select:w_born,1.}
+    - ${oc.select:w_polarizability,1.}
+  loss_fns:
+    - _target_: tensorial.gcnn.Loss
+      loss_fn: squared_error
+      predictions: globals.predicted_energy
+      targets: globals.energy
+
+    - _target_: tensorial.gcnn.Loss
+      loss_fn: squared_error
+      predictions: nodes.predicted_forces
+      targets: nodes.forces
+
+    # The dipole of a periodic cell is defined up to e times a lattice vector
+    - _target_: e3response.losses.FoldedDipoleLoss
+
+    - _target_: tensorial.gcnn.Loss
+      loss_fn: squared_error
+      predictions: nodes.predicted_born_charges
+      targets: nodes.born_charges
+
+    - _target_: tensorial.gcnn.Loss
+      loss_fn: squared_error
+      predictions: globals.predicted_polarizability
+      targets: globals.polarizability
+
+model:
+  _target_: tensorial.nn.Sequential
+  layers:
+    - _target_: tensorial.gcnn.atomic.SpeciesTransform
+      atomic_numbers: ${from_data.atomic_numbers}
+
+    - _target_: tensorial.gcnn.NodewiseEmbedding
+      attrs:
+        species:
+          _target_: tensorial.tensors.OneHot
+          num_classes: ${from_data.n_elements}
+        # Not normalised: the chain differentiates with respect to this field at zero, and a
+        # normalised field only carries its direction, which has no derivative there
+        globals.external_electric_field:
+          _target_: tensorial.tensors.SphericalHarmonic
+          irreps: 0e + 1o
+          normalise: False
+
+    - _target_: tensorial.gcnn.EdgeVectors
+
+    - _target_: tensorial.gcnn.EdgewiseEncoding
+      attrs:
+        edge_vectors:
+          _target_: tensorial.tensors.SphericalHarmonic
+          irreps: 0e + 1o
+          normalise: True
+
+    - _target_: tensorial.gcnn.RadialBasisEdgeEncoding
+      r_max: ${r_max}
+
+    # Hidden irreps: `mul` channels of every irrep up to `ell_max`, see
+    # tensorial.make_irreps.  Override per run, e.g. `mul=16 ell_max=3 num_layers=4`.
+    # Keep only scalars and reduce the number passing this point
+    - _target_: tensorial.gcnn.NodewiseLinear
+      field: attributes
+      irreps_out:
+        _target_: tensorial.make_irreps
+        mul: ${oc.select:mul,16}
+        ell_max: ${oc.select:ell_max,2}
+
+    - _target_: tensorial.gcnn.Nequip
+      hidden_irreps:
+        _target_: tensorial.make_irreps
+        mul: ${oc.select:mul,16}
+        ell_max: ${oc.select:ell_max,2}
+      num_layers: ${oc.select:num_layers,3}
+      avg_num_neighbours: ${from_data.avg_num_neighbours}
+
+    - _target_: tensorial.gcnn.NodewiseLinear
+      irreps_out: 4x0e + 4x0o + 4x1e + 4x1o + 4x2e + 4x2o + 2x3o + 2x3e
+
+    - _target_: tensorial.gcnn.NodewiseLinear
+      irreps_out: 1x0e
+      out_field: energy # Per-atom energy
+
+    # Per-species baseline, so the energy head learns residuals rather than the ~-750 eV offset
+    - _target_: tensorial.gcnn.atomic.per_species_rescale
+      num_types: ${from_data.n_elements}
+      field: nodes.energy
+      out_field: nodes.energy
+      shifts: ${from_data.energy_shifts}
+      scales: 1.0
+
+    - _target_: tensorial.gcnn.NodewiseReduce
+      field: energy
+      out_field: predicted_energy
+      as_array: True
+
+    # Geometry-independent polarizability per species, -½ Σ α_Z |ε|²: carries the bulk of χ,
+    # which the network then only corrects (cf. the direct model's per-species constants)
+    - _target_: e3response.electric_linked.SpeciesPolarizability
+      num_species: ${from_data.n_elements}
+
+    # Sobolev model: the energy above is the only readout; every other labelled quantity is a
+    # derivative of it, through linked chains of e3response.electric_linked:
+    #   E --(-d/dε)--> d --(d/dε)--> χ          dipole moment and polarizability
+    #   E --(-d/du)--> F --(d/dε)--> Z*         forces and Born charges
+    # Units are physical throughout (eV, Å, V), so d is in e·Å, χ in e·Å²/V and Z* in e, as
+    # in the data; no rescaling of the field is needed.  The two chains run side by side on
+    # the same energy.
+    - _target_: e3response.electric_linked.LinkedBranches
+      _partial_: True
+      branches:
+        - - _target_: e3response.electric_linked.Polarization
+            _partial_: True
+          - _target_: e3response.electric_linked.DielectricTensor
+            _partial_: True
+        - - _target_: e3response.electric_linked.Forces
+            _partial_: True
+          - _target_: e3response.electric_linked.BornCharges
+            _partial_: True

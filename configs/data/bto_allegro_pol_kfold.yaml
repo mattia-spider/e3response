@@ -1,0 +1,15 @@
+# allegro-pol's BaTiO3 with k-fold cross-validation: a fixed test set (test_fraction of the data,
+# the same for every fold) and the rest split into n_folds folds, one of which is the validation
+# set.  Sweep the folds with `data=bto_allegro_pol_kfold data.fold=0,1,2,3,4 -m`.
+# The dipole moment is folded by lattice vectors, so leave it out of plain losses.
+_target_: tensorial.gcnn.data.GraphDataModule.from_kfold
+dataset:
+  _target_: e3response.data.BtoAllegroPolDataset
+  r_max: ${r_max}
+  data_dir: ${paths.data_dir}/bto_allegro_pol
+  include_electric_field: True
+fold: 0
+n_folds: 5
+test_fraction: 0.1
+seed: 42
+batch_size: 4 # Needs to be divisible by the number of devices (e.g., if in a distributed setup)

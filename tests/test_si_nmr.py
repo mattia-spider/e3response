@@ -6,9 +6,10 @@ from monty.json import MontyEncoder
 import numpy as np
 from pymatgen.core import Lattice, Structure
 import pytest
-import reax
+from tensorial import gcnn
 
-from e3response.data.si_nmr import SiNmrDataModule
+from e3response.data import GroupedRandomSplit
+from e3response.data.si_nmr import SiNmrDataset
 
 # Mock: 3 Q classes (Q2, Q3, Q4), 4 structures each → 12 total
 _MOCK_Q_CLASSES = [2, 3, 4]
@@ -17,7 +18,7 @@ _MOCK_N_STRUCTURES = len(_MOCK_Q_CLASSES) * _MOCK_PER_CLASS
 
 
 def _make_atoms(qn: int, seed: int = 0, n_atoms: int = 4, n_si: int = 1) -> ase.Atoms:
-    """Minimal Atoms object with the arrays expected by SiNmrDataModule."""
+    """Minimal Atoms object with the arrays expected by SiNmrDataset."""
     rng = np.random.default_rng(seed)
     symbols = ["Si"] * n_si + ["O"] * (n_atoms - n_si)
     atoms = ase.Atoms(symbols, positions=rng.random((n_atoms, 3)) * 2.0)
@@ -39,24 +40,15 @@ def mock_structures() -> list[ase.Atoms]:
     return structures
 
 
-class _DummyStage(reax.Stage):
-    def __init__(self, engine):
-        super().__init__(name="dummy", module=None, engine=engine, rngs=engine.rngs)
-
-    def _step(self):
-        return {}
-
-    def log(self, name, value, **kwargs):
-        pass
-
-
-def _make_dm(split=(0.5, 0.25, 0.25)) -> SiNmrDataModule:
-    return SiNmrDataModule(
-        r_max=3.0,
-        data_file="dummy.json",  # overridden by monkeypatch
-        train_val_test_split=split,
-        batch_size=1,
+def _make_dm(test_engine, strategy, monkeypatch, structures) -> gcnn.data.GraphDataModule:
+    """A data module over the mock structures, set up as training sets it up."""
+    monkeypatch.setattr(SiNmrDataset, "_load_structures", lambda self: structures)
+    dm = gcnn.data.GraphDataModule(
+        SiNmrDataset(r_max=3.0, data_file="dummy.json"), strategy, batch_size=1
     )
+    dm.prepare_data()
+    dm.setup(test_engine, stage="fit")
+    return dm
 
 
 @pytest.fixture
@@ -93,36 +85,27 @@ def test_si_nmr_constructor_limit(mock_si_json, limit, expected):
     """The constructor `limit` (int or slice-string) is applied via the shared
     parse_limit inside `_load_structures`."""
     json_path, _ = mock_si_json
-    dm = SiNmrDataModule(r_max=3.0, data_file=json_path, batch_size=1, limit=limit)
-    assert len(dm._load_structures()) == expected
+    assert len(SiNmrDataset(r_max=3.0, data_file=json_path, limit=limit)) == expected
 
 
-def test_si_nmr_qn_grouping(mock_structures):
-    """Qn grouping produces one group per Q class, each with _MOCK_PER_CLASS structures."""
-    groups: dict[tuple, list] = collections.defaultdict(list)
-    for atoms in mock_structures:
-        label = tuple(sorted(set(atoms.arrays.get("Qn", []))))
-        groups[label].append(atoms)
+def test_si_nmr_qn_grouping(mock_structures, monkeypatch):
+    """The dataset's groups are the Qn signatures: one per Q class, _MOCK_PER_CLASS each."""
+    monkeypatch.setattr(SiNmrDataset, "_load_structures", lambda self: mock_structures)
+    dataset = SiNmrDataset(r_max=3.0, data_file="dummy.json")
+    groups = collections.Counter(dataset.groups)
 
     assert len(groups) == len(_MOCK_Q_CLASSES), "Wrong number of Q groups"
     for q in _MOCK_Q_CLASSES:
         assert (q,) in groups, f"Missing group for Q{q}"
-        assert len(groups[(q,)]) == _MOCK_PER_CLASS, f"Wrong size for Q{q} group"
+        assert groups[(q,)] == _MOCK_PER_CLASS, f"Wrong size for Q{q} group"
 
 
 def test_si_nmr_non_stratified_split(mock_structures, test_engine, monkeypatch):
-    """stratify=False falls back to a plain random split over all structures (no Qn grouping):
-    partitions still cover the whole dataset and are non-empty for this well-sized mock."""
-    monkeypatch.setattr(SiNmrDataModule, "_load_structures", lambda self: mock_structures)
-
-    dm = SiNmrDataModule(
-        r_max=3.0,
-        data_file="dummy.json",
-        train_val_test_split=(0.5, 0.25, 0.25),
-        batch_size=1,
-        stratify=False,
+    """A plain RandomSplit ignores the Qn groups: partitions still cover the whole dataset and
+    are non-empty for this well-sized mock."""
+    dm = _make_dm(
+        test_engine, gcnn.data.RandomSplit((0.5, 0.25, 0.25)), monkeypatch, mock_structures
     )
-    dm.setup(_DummyStage(test_engine))
 
     n_train, n_val, n_test = len(dm.data_train), len(dm.data_val), len(dm.data_test)
     assert n_train + n_val + n_test == _MOCK_N_STRUCTURES
@@ -131,10 +114,9 @@ def test_si_nmr_non_stratified_split(mock_structures, test_engine, monkeypatch):
 
 def test_si_nmr_datamodule_stratified(mock_structures, test_engine, monkeypatch):
     """Stratified split: every partition contains structures from all Q classes."""
-    monkeypatch.setattr(SiNmrDataModule, "_load_structures", lambda self: mock_structures)
-
-    dm = _make_dm(split=(0.5, 0.25, 0.25))
-    dm.setup(_DummyStage(test_engine))
+    dm = _make_dm(
+        test_engine, GroupedRandomSplit((0.5, 0.25, 0.25)), monkeypatch, mock_structures
+    )
 
     n_train = len(dm.data_train)
     n_val = len(dm.data_val)
@@ -156,29 +138,40 @@ def test_si_nmr_datamodule_stratified(mock_structures, test_engine, monkeypatch)
     assert n_test == 3
 
 
+def test_si_nmr_load_split(mock_structures, monkeypatch):
+    """load_split replays a strategy's partitions: disjoint, covering, and limit-able."""
+    monkeypatch.setattr(SiNmrDataset, "_load_structures", lambda self: mock_structures)
+    dataset = SiNmrDataset(r_max=3.0, data_file="dummy.json")
+    strategy = GroupedRandomSplit((0.5, 0.25, 0.25))
+
+    parts = {split: dataset.load_split(split, strategy) for split in ("train", "val", "test")}
+    assert [len(p) for p in parts.values()] == [6, 3, 3]
+    seen = {id(graph) for part in parts.values() for graph in part}
+    assert len(seen) == _MOCK_N_STRUCTURES
+    assert len(dataset.load_split("train", strategy, limit=2)) == 2
+    with pytest.raises(ValueError):
+        dataset.load_split("validation", strategy)
+
+
 def test_si_nmr_dataloaders(mock_structures, test_engine, monkeypatch):
     """All three dataloaders yield valid graph batches with the expected fields."""
-    monkeypatch.setattr(SiNmrDataModule, "_load_structures", lambda self: mock_structures)
-
-    dm = _make_dm()
-    dm.setup(_DummyStage(test_engine))
+    dm = _make_dm(
+        test_engine, GroupedRandomSplit((0.5, 0.25, 0.25)), monkeypatch, mock_structures
+    )
 
     for loader_fn in ["train_dataloader", "val_dataloader", "test_dataloader"]:
         loader = getattr(dm, loader_fn)()
         batch_tuple = next(iter(loader))
 
-        assert isinstance(batch_tuple, tuple), f"{loader_fn} did not return a tuple"
-        batch = batch_tuple[0]
+        batch = batch_tuple[0] if isinstance(batch_tuple, tuple) else batch_tuple
 
         assert hasattr(batch, "nodes"), f"{loader_fn} batch has no 'nodes'"
 
         assert "nmr_tensors" in batch.nodes, f"{loader_fn} batch missing 'nmr_tensors'"
         nmr = batch.nodes["nmr_tensors"]
-        assert isinstance(nmr, np.ndarray), f"'nmr_tensors' in {loader_fn} is not ndarray"
         assert nmr.ndim == 3, f"'nmr_tensors' ndim wrong in {loader_fn}"
         assert nmr.shape[-2:] == (3, 3), f"'nmr_tensors' shape wrong in {loader_fn}"
 
         assert "nmr_active" in batch.nodes, f"{loader_fn} batch missing 'nmr_active'"
         mask = batch.nodes["nmr_active"]
-        assert isinstance(mask, np.ndarray), f"'nmr_active' in {loader_fn} is not ndarray"
         assert mask.dtype == bool, f"'nmr_active' in {loader_fn} is not bool"

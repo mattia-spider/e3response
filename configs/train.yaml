@@ -33,6 +33,9 @@ task_name: "train"
 tags: [ "dev" ]
 
 r_max: 5.0
+mul: 8
+ell_max: 2
+num_layers: 3
 
 # Gather data use by the model before training
 from_data:
@@ -54,9 +57,11 @@ optimized_metric: null
 
 # set False to skip model training
 train:
-  min_epochs: 10 # prevents early stopping
-  max_epochs: 2000
-  # max_time: 00:00:00:50 # maximum time for training, in HH:MM:SS format
+  # prevents early stopping  
+  min_epochs: 100
+  max_epochs: 5000 
+  # maximum time for training, in HH:MM:SS format
+  max_time: "00:19:55:00"
   # perform a validation loop every N training epochs
   check_val_every_n_epoch: 1
 

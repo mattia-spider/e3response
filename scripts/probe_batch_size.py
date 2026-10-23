@@ -37,9 +37,12 @@ How it measures
 Each candidate runs in a fresh subprocess, because a JAX process that has hit an out of memory
 error cannot be trusted afterwards.  Candidates are tried in increasing order and the search
 stops at the first failure, since what fits is monotonic in the batch size.  JAX preallocation
-is switched off so the reported peak is what the model needs; the real runs should do the same
-(XLA_PYTHON_CLIENT_PREALLOCATE=false), otherwise JAX hands them only part of the card.  The peak
-is read from nvidia-smi and so covers the whole card: run it on an otherwise idle GPU.
+is switched off so the reported peak tracks what the model needs.  Switching it off does NOT lift
+JAX's cap on the card, though: the allocator is still limited to XLA_PYTHON_CLIENT_MEM_FRACTION
+of it (0.75 by default, ~61 GB on an 80 GB H100), so the probe sets that fraction (--mem-fraction)
+and the real runs must export the same value, or what fits here will OOM there.  The peak is read
+from nvidia-smi, so it covers the whole card (run on an otherwise idle GPU) and it is the memory
+the allocator has reserved, which grows in steps of ~2x: read it as an upper bound.
 """
 
 import argparse
@@ -151,7 +154,8 @@ def _probe(
     # in the base config and need ++ as well
     cmd += [f"++{k}={v}" for k, v in stack.items()] + args.overrides
 
-    env = dict(os.environ, XLA_PYTHON_CLIENT_PREALLOCATE="false")
+    env = dict(os.environ, XLA_PYTHON_CLIENT_PREALLOCATE="false",
+               XLA_PYTHON_CLIENT_MEM_FRACTION=str(args.mem_fraction))
     stop, peaks = threading.Event(), []
     sampler = threading.Thread(target=_sample_peak, args=(stop, peaks), daemon=True)
     sampler.start()
@@ -197,6 +201,9 @@ def main() -> int:
     par.add_argument("--trainer", default="gpu")
     par.add_argument("--out", default="/tmp/bs_probe")
     par.add_argument("--timeout", type=int, default=3600)
+    par.add_argument("--mem-fraction", type=float, default=0.95,
+                     help="XLA_PYTHON_CLIENT_MEM_FRACTION for the probes; export the same value "
+                          "in the real runs")
     par.add_argument("overrides", nargs="*", default=[],
                      help="extra hydra overrides passed to every run")
     args = par.parse_args()
@@ -221,7 +228,8 @@ def main() -> int:
 
     total = _gpu_query("memory.total")
     print(f"data={args.data}  subset={'limit ' + limit if limit else 'all'}  "
-          f"card={total or '?'} MiB")
+          f"card={total or '?'} MiB  mem_fraction={args.mem_fraction} "
+          f"(export XLA_PYTHON_CLIENT_MEM_FRACTION={args.mem_fraction} in the real runs)")
     if not args.all_configs:
         print(f"Probing the largest stack only (mul={muls[-1]} ell_max={ells[-1]} "
               f"num_layers={layers[-1]}); pass the sweep's --mul/--ell-max/--num-layers, "
@@ -244,9 +252,9 @@ def main() -> int:
                 largest, largest_peak = bs, peak
             results[(model, *stack.values())] = largest
             if largest and total and largest_peak > 0.75 * total:
-                print(f"  NOTE: {largest_peak} MiB is over 75% of the card: under JAX's default "
-                      f"preallocation this would OOM, so set XLA_PYTHON_CLIENT_PREALLOCATE=false "
-                      f"for the real runs")
+                print(f"  NOTE: {largest_peak} MiB is over 75% of the card: JAX's default cap "
+                      f"would OOM, so the real runs need XLA_PYTHON_CLIENT_MEM_FRACTION="
+                      f"{args.mem_fraction}")
 
     print("\n=== largest batch size that fits ===")
     for (model, mul, ell, nl), largest in results.items():

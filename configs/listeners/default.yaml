@@ -13,12 +13,13 @@ model_checkpoint:
   monitor: "val/nmr_tensors_rmse"
   mode: "min"
   save_last: True
+  save_on_train_epoch_end: False
   auto_insert_metric_name: False
 
 early_stopping:
   monitor: "val/nmr_tensors_rmse"
   min_delta: 0.001
-  patience: 50
+  patience: 100
   check_on_train_epoch_end: False
 
 #model_summary:

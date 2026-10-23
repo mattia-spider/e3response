@@ -158,3 +158,49 @@ def test_csh_nmr_dataloaders(mock_csh_json, test_engine):
         assert nmr.shape[-2:] == (3, 3), (
             f"'nmr_tensors' last dims must be (3,3), got {nmr.shape[-2:]}"
         )
+
+
+def _water_and_hydroxyl() -> Atoms:
+    """A water molecule, a hydroxyl (Si-O-H) and a bare O, far enough apart not to mix."""
+    return Atoms(
+        "OHHOHSiO",
+        positions=[
+            [0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0],  # water
+            [5.0, 0.0, 0.0], [5.96, 0.0, 0.0], [3.4, 0.0, 0.0],  # Si-O-H
+            [10.0, 0.0, 0.0],  # bare O
+        ],
+    )
+
+
+def test_water_atoms():
+    from e3response.data.csh_nmr import water_atoms
+
+    assert water_atoms(_water_and_hydroxyl()).tolist() == [
+        True, True, True, False, False, False, False
+    ]
+
+
+def test_nmr_active_sites():
+    from e3response.data.csh_nmr import nmr_active
+
+    atoms = _water_and_hydroxyl()
+    assert nmr_active(atoms, "all") is None
+    assert nmr_active(atoms, None) is None
+    assert nmr_active(atoms, "no_water").tolist() == [False] * 3 + [True] * 4
+    assert nmr_active(atoms, [14]).tolist() == [False] * 5 + [True, False]
+    with pytest.raises(ValueError):
+        nmr_active(atoms, "water")
+
+
+def test_csh_nmr_sites_in_graphs(mock_csh_json):
+    """`nmr_sites` puts the label mask in the graphs; the default leaves them without it."""
+    from e3response import keys
+
+    plain = CshNmrDataset(r_max=3.0, data_file=mock_csh_json)
+    assert keys.NMR_ACTIVE not in plain[0].nodes
+
+    # The mock atoms are all H: keeping only Na leaves no active atom, keeping H all of them
+    none_active = CshNmrDataset(r_max=3.0, data_file=mock_csh_json, nmr_sites=[11])
+    all_active = CshNmrDataset(r_max=3.0, data_file=mock_csh_json, nmr_sites=[1])
+    assert not np.asarray(none_active[0].nodes[keys.NMR_ACTIVE]).any()
+    assert np.asarray(all_active[0].nodes[keys.NMR_ACTIVE]).all()

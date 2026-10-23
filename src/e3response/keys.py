@@ -19,5 +19,7 @@ INDUCED_MAGNETIC_FIELD: Final[str] = "induced_magnetic_field"
 NUCLEAR_MAGNETIC_MOMENT: Final[str] = "nuclear_magnetic_moment"
 MAGNETIC_SHIELDING_TENSOR: Final[str] = "magnetic_shielding_tensor"
 NMR_TENSORS: Final[str] = "nmr_tensors"
+# Atoms that carry an NMR label; datasets that label only some atoms set it, see NmrTensorLoss
+NMR_ACTIVE: Final[str] = "nmr_active"
 
 

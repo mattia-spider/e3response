@@ -8,6 +8,9 @@ dataset:
   r_max: ${r_max}
   data_file: ${paths.data_dir}/csh_nmr/Na_csh_filtered.json
   limit: bulk
+  # Atoms the NMR loss and metrics count: all, no_water, or atomic numbers (e.g. [11], Na
+  # only); the others stay in the graph as environment
+  nmr_sites: all
 strategy:
   _target_: e3response.data.GroupedRandomSplit
   fractions: [0.80, 0.10, 0.10]

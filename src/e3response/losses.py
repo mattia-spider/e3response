@@ -112,6 +112,36 @@ class L2Regularization(gcnn.Loss):
         return super()._call(predictions, predictions)
 
 
+class NmrTensorLoss(gcnn.Loss):
+    """Squared error on the NMR tensors, over the atoms that carry one.
+
+    Datasets that label only some atoms (Si: the sites with a computed tensor; C-S-H with
+    ``nmr_sites``) mark them in ``nodes.nmr_active`` and give the others a placeholder tensor,
+    which must not be fitted.  Graphs without that field (QM9) count every atom.  Picking the
+    mask up from the data, rather than from a config switch, means it cannot be forgotten.
+    """
+
+    def __init__(self, *, reduction: str = "mean", label: str | None = None):
+        super().__init__(
+            optax.squared_error,
+            f"nodes.{keys.NMR_TENSORS}",
+            f"nodes.{predicted(keys.NMR_TENSORS)}",
+            reduction=reduction,
+            label=label,
+            mask_field=f"nodes.{keys.NMR_ACTIVE}",
+        )
+
+    def _call(self, predictions: jraph.GraphsTuple, targets: jraph.GraphsTuple) -> jax.Array:
+        n_nodes = jnp.asarray(targets.nodes[keys.NMR_TENSORS]).shape[0]
+        if keys.NMR_ACTIVE in targets.nodes:
+            # Per-atom scalars come out of graph_from_ase as (n_node, 1); an entity mask is (n_node,)
+            active = jnp.asarray(targets.nodes[keys.NMR_ACTIVE]).astype(bool).reshape(n_nodes)
+        else:
+            active = jnp.ones(n_nodes, dtype=bool)
+        targets = targets._replace(nodes={**targets.nodes, keys.NMR_ACTIVE: active})
+        return super()._call(predictions, targets)
+
+
 def response_loss(
     energy: bool | float = False,
     forces: bool | float = False,
@@ -188,13 +218,7 @@ def response_loss(
 
     if nmr_tensors:
         weights.append(1.0 if isinstance(nmr_tensors, bool) else nmr_tensors)
-        loss_terms.append(
-            gcnn.Loss(
-                optax.squared_error, 
-                f"nodes.{keys.NMR_TENSORS}",
-                f"nodes.{predicted(keys.NMR_TENSORS)}",
-            )
-        )
+        loss_terms.append(NmrTensorLoss())
 
     if induced_magnetic_field:
         weights.append(

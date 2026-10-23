@@ -6,6 +6,8 @@ metrics:
       metric: rmse
       predictions: nodes.predicted_nmr_tensors
       targets: nodes.nmr_tensors
+      # Only the atoms that carry a label (Si, C-S-H nmr_sites); all of them when absent
+      mask: nodes.nmr_active
 
     energy_rmse:
       _target_: tensorial.gcnn.graph_metric
@@ -20,6 +22,7 @@ metrics:
       metric: rmse
       predictions: nodes.predicted_nmr_tensors
       targets: nodes.nmr_tensors
+      mask: nodes.nmr_active
       atomic_numbers: ${from_data.atomic_numbers}
 
 optimizer:

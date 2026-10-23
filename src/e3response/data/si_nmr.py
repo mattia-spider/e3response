@@ -65,7 +65,8 @@ class SiNmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
             r_max=self._rmax,
             atom_include_keys=("numbers", "nmr_tensors", "mask"),
             global_include_keys=[],
-            key_mapping={"mask": "nmr_active"},
+            # Only the atoms with a computed tensor carry a label, see losses.NmrTensorLoss
+            key_mapping={"mask": keys.NMR_ACTIVE},
         )
 
     def load_split(

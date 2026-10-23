@@ -5,6 +5,7 @@ import pathlib
 from typing import Any, Final, Optional, Sequence, Union
 
 from ase import Atoms
+from ase.neighborlist import neighbor_list
 from flax import nnx
 import jraph
 import numpy as np
@@ -17,6 +18,38 @@ from e3response.data._splits import split_indices
 _LOGGER = logging.getLogger(__name__)
 
 __all__ = ("CshNmrDataset",)
+
+
+# An O with exactly two H closer than this is a water molecule (O-H ~0.97 A, while the H-bond
+# partner of a hydroxyl or water H sits at ~1.6 A or more)
+WATER_OH_CUTOFF: Final[float] = 1.25
+
+
+def water_atoms(atoms: Atoms) -> np.ndarray:
+    """Boolean per-atom mask of the O and H atoms that form water molecules."""
+    first, second = neighbor_list("ij", atoms, WATER_OH_CUTOFF)
+    numbers = atoms.numbers
+    oh = (numbers[first] == 8) & (numbers[second] == 1)
+    n_h = np.bincount(first[oh], minlength=len(atoms))
+    water_o = (numbers == 8) & (n_h == 2)
+    water = water_o.copy()
+    water[second[oh & water_o[first]]] = True
+    return water
+
+
+def nmr_active(atoms: Atoms, sites: Union[str, Sequence[int], None]) -> Optional[np.ndarray]:
+    """Which atoms the NMR loss and metrics count, or None for all of them.
+
+    :param sites: "all" (or None) for every atom, "no_water" to drop the water O and H, or a
+        list of atomic numbers to keep only those elements (e.g. [11] for Na only).
+    """
+    if sites is None or sites == "all":
+        return None
+    if sites == "no_water":
+        return ~water_atoms(atoms)
+    if isinstance(sites, str):
+        raise ValueError(f"Unknown nmr_sites '{sites}': use 'all', 'no_water' or atomic numbers")
+    return np.isin(atoms.numbers, [int(z) for z in sites])
 
 
 def _apply_limit(structures: list[Atoms], limit: int | str | None) -> list[Atoms]:
@@ -54,17 +87,31 @@ class CshNmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
         r_max: float,
         data_file: Union[str, pathlib.Path] = "data/csh_nmr/Na_csh.json",
         limit: Optional[Union[int, str]] = None,
+        nmr_sites: Union[str, Sequence[int], None] = "all",
     ) -> None:
         """
         :param r_max: The cutoff radius used to build the graphs.
         :param data_file: The JSON file with the structures and their tensors.
         :param limit: Which structures to load, see `_apply_limit` ("bulk", "surface", N, ...).
+        :param nmr_sites: which atoms the NMR loss and metrics count, see `nmr_active`; the
+            others stay in the graph as environment.
         """
         self._rmax: Final[float] = r_max
         self._data_file: Final[str] = str(data_file)
         self._limit = limit
+        if nmr_sites is not None and not isinstance(nmr_sites, str):
+            nmr_sites = [int(z) for z in nmr_sites]  # a ListConfig when it comes from Hydra
 
         self.structures: Final[list[Atoms]] = self._load_structures()
+        n_active = n_atoms = 0
+        for atoms in self.structures:
+            active = nmr_active(atoms, nmr_sites)
+            if active is not None:
+                atoms.arrays[keys.NMR_ACTIVE] = active
+                n_active += int(active.sum())
+            n_atoms += len(atoms)
+        if nmr_sites not in (None, "all"):
+            _LOGGER.info("NMR sites %s: %d of %d atoms", nmr_sites, n_active, n_atoms)
         # Bulk or surface, the label of a stratified split
         self.groups: Final[list] = [atoms.info.get("struct_type") for atoms in self.structures]
         self._graphs: Final[list[jraph.GraphsTuple]] = list(map(self._to_graph, self.structures))
@@ -76,10 +123,13 @@ class CshNmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
         return self._graphs[index]
 
     def _to_graph(self, atoms: Atoms) -> jraph.GraphsTuple:
+        atom_keys = ("numbers", "nmr_tensors")
+        if keys.NMR_ACTIVE in atoms.arrays:
+            atom_keys += (keys.NMR_ACTIVE,)
         return gcnn.atomic.graph_from_ase(
             atoms,
             r_max=self._rmax,
-            atom_include_keys=("numbers", "nmr_tensors"),
+            atom_include_keys=atom_keys,
             global_include_keys=[keys.EXTERNAL_MAGNETIC_FIELD, gcnn.atomic.TOTAL_ENERGY],
         )
 

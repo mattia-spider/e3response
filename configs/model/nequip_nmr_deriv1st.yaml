@@ -6,6 +6,8 @@ metrics:
       metric: rmse
       predictions: nodes.predicted_nmr_tensors
       targets: nodes.nmr_tensors
+      # Only the atoms that carry a label (Si, C-S-H nmr_sites); all of them when absent
+      mask: nodes.nmr_active
 
     # Per-species NMR RMSE for every species in the type map gathered from the data, logged as
     # nmr_rmse_<symbol> (nmr_rmse_H, nmr_rmse_C, ...).  Add `species: [1, 6]` to keep only some
@@ -14,6 +16,7 @@ metrics:
       metric: rmse
       predictions: nodes.predicted_nmr_tensors
       targets: nodes.nmr_tensors
+      mask: nodes.nmr_active
       atomic_numbers: ${from_data.atomic_numbers}
 
 optimizer:

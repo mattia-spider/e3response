@@ -6,7 +6,7 @@ _target_: tensorial.gcnn.data.GraphDataModule
 dataset:
   _target_: e3response.data.csh_nmr.CshNmrDataset
   r_max: ${r_max}
-  data_file: ${paths.data_dir}/csh_nmr/Na_csh.json
+  data_file: ${paths.data_dir}/csh_nmr/Na_csh_filtered.json
   limit: bulk
 strategy:
   _target_: e3response.data.GroupedRandomSplit

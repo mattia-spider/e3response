@@ -19,6 +19,26 @@ data:
     # 33 of the 228 structures have one dielectric eigenvalue near -64 (failed calculations)
     drop_unphysical_dielectric: True
 
+# Scale of each target, 1 / (mean square left after the baseline a constant model predicts),
+# see e3response.stats.  Computed on the training set, used only if the weights below point to
+# them, e.g. 'w_born=${from_data.inv_ms_born}'
+from_data:
+  inv_ms_born:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: nodes.born_charges
+    baseline: species_isotropic
+    inverse: true
+  inv_ms_raman:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: nodes.raman_tensors
+    baseline: zero
+    inverse: true
+  inv_ms_dielectric:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: globals.dielectric_tensor
+    baseline: isotropic
+    inverse: true
+
 # Loss weights, read by both model configs.  Born charges are O(1) and fitted most tightly; the
 # Raman weight is raised from the lab's 1 so that it is not drowned by the other two.
 w_born: 1000.

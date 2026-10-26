@@ -15,6 +15,33 @@ from_data:
   energy_shifts:
     _target_: tensorial.gcnn.atomic.EnergyContributionLstsq
     type_map: ${from_data.atomic_numbers}
+  # Scale of each target, 1 / (mean square left after the baseline a constant model predicts),
+  # see e3response.stats; used only if a weight points to it, e.g. 'w_born=${from_data.inv_ms_born}'
+  inv_ms_energy:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: globals.energy
+    baseline: species_lstsq
+    inverse: true
+  inv_ms_forces:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: nodes.forces
+    baseline: zero
+    inverse: true
+  inv_ms_dipole:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: globals.dipole_moment
+    baseline: zero
+    inverse: true
+  inv_ms_born:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: nodes.born_charges
+    baseline: species_isotropic
+    inverse: true
+  inv_ms_polarizability:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: globals.polarizability
+    baseline: isotropic
+    inverse: true
 
 # Loss weights 1/σ², σ the spread of each label in the data that the model has to learn: the
 # energy about its mean (4.07 eV), forces (0.90 eV/Å), dipole moment (3.5 e·Å), Born charges

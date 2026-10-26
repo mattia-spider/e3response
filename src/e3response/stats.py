@@ -18,8 +18,11 @@ starts from, so that ``1 / residual`` puts every term at O(1) at the start of tr
 The baseline is what an equivariant model with no geometry information could output:
 
 - ``zero``: vectors and tensors with no invariant part (forces, dipoles, Raman tensors).
+- ``mean``: the mean of every component, the same for every entry.  For a global tensor in a
+  dataset whose cells all share one orientation, where the anisotropic part of the mean is
+  learnt at once from the lattice, so only the spread about it is left to learn.
 - ``isotropic``: a rank-2 tensor's mean isotropic part, the same for every entry (a global
-  tensor such as the dielectric one).
+  tensor in cells of any orientation).
 - ``species_isotropic``: a rank-2 per-atom tensor's mean isotropic part for each element (Born
   charges, NMR shielding).
 - ``species_lstsq``: a global scalar fitted as a sum of per-element contributions (the total
@@ -39,7 +42,7 @@ from typing_extensions import override
 
 __all__ = ("ResidualMeanSquare",)
 
-Baseline = Literal["zero", "isotropic", "species_isotropic", "species_lstsq"]
+Baseline = Literal["zero", "mean", "isotropic", "species_isotropic", "species_lstsq"]
 _N_Z = 119  # atomic numbers 0..118
 
 
@@ -61,7 +64,7 @@ class ResidualMeanSquare(reax.Metric):
         species_field: str = "nodes.atomic_numbers",
         _state: dict | None = None,
     ):
-        if baseline not in ("zero", "isotropic", "species_isotropic", "species_lstsq"):
+        if baseline not in ("zero", "mean", "isotropic", "species_isotropic", "species_lstsq"):
             raise ValueError(f"Unknown baseline '{baseline}'")
         root = field.split(".")[0]
         if baseline == "species_isotropic" and root != "nodes":
@@ -107,7 +110,9 @@ class ResidualMeanSquare(reax.Metric):
         s = self._state
         n_entries, n_comp = s["n"], s["n_comp"]
         residual = s["sum_sq"]
-        if self.baseline == "isotropic":
+        if self.baseline == "mean":
+            residual -= float((s["sum"] ** 2).sum()) / n_entries
+        elif self.baseline == "isotropic":
             residual -= 3.0 * s["sum_iso"] ** 2 / n_entries
         elif self.baseline == "species_isotropic":
             seen = s["count_z"] > 0
@@ -139,7 +144,9 @@ class ResidualMeanSquare(reax.Metric):
         n_comp = values.shape[1]
         state = {"n": float(len(values)), "sum_sq": float((values**2).sum())}
 
-        if self.baseline in ("isotropic", "species_isotropic"):
+        if self.baseline == "mean":
+            state["sum"] = values.sum(axis=0)
+        elif self.baseline in ("isotropic", "species_isotropic"):
             if n_comp != 9:
                 raise ValueError(f"{self.baseline} needs a 3x3 tensor, {self.field} has {n_comp}")
             iso = values[:, [0, 4, 8]].sum(axis=1) / 3.0

@@ -16,7 +16,7 @@ from_data:
     _target_: tensorial.gcnn.atomic.EnergyContributionLstsq
     type_map: ${from_data.atomic_numbers}
   # Scale of each target, 1 / (mean square left after the baseline a constant model predicts),
-  # see e3response.stats; used only if a weight points to it, e.g. 'w_born=${from_data.inv_ms_born}'
+  # see e3response.stats, computed on the training set: the loss weights below
   inv_ms_energy:
     _target_: e3response.stats.ResidualMeanSquare
     field: globals.energy
@@ -40,18 +40,20 @@ from_data:
   inv_ms_polarizability:
     _target_: e3response.stats.ResidualMeanSquare
     field: globals.polarizability
-    baseline: isotropic
+    baseline: mean
     inverse: true
 
 # Loss weights 1/σ², σ the spread of each label in the data that the model has to learn: the
 # energy about its mean (4.07 eV), forces (0.90 eV/Å), dipole moment (3.5 e·Å), Born charges
 # about one isotropic charge per species (0.63 e) and polarizability about its mean (0.46 e·Å²/V).
 # Each term then starts out as a relative error.
-w_energy: 0.06
-w_forces: 1.2
-w_dipole: 0.08
-w_born: 2.5
-w_polarizability: 4.8
+# Computed from the training set (from_data.inv_ms_*), which reproduces the values set by hand
+# from these spreads before: 0.06, 1.2, 0.08, 2.5, 4.8 (computed 0.057, 1.25, 0.080, 2.51, 5.24)
+w_energy: ${from_data.inv_ms_energy}
+w_forces: ${from_data.inv_ms_forces}
+w_dipole: ${from_data.inv_ms_dipole}
+w_born: ${from_data.inv_ms_born}
+w_polarizability: ${from_data.inv_ms_polarizability}
 
 # Born charges need l = 2 features in a direct readout (their symmetric anisotropic part is 2e)
 ell_max: 2

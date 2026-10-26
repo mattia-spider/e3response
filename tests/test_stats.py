@@ -58,6 +58,10 @@ def test_residual_mean_square_baselines():
         _accumulate(ResidualMeanSquare("nodes.born_charges", inverse=True), batches), 1 / ref
     )
 
+    # mean baseline: spread about the mean tensor
+    ref = ((diel - diel.mean(axis=0)) ** 2).mean()
+    assert np.isclose(_accumulate(ResidualMeanSquare("globals.dielectric_tensor", "mean"), batches), ref)
+
     # isotropic baseline on a global tensor
     iso = np.trace(diel, axis1=1, axis2=2).mean() / 3
     ref = ((diel - iso * np.eye(3)) ** 2).mean()

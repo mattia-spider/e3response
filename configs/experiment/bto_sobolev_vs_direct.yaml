@@ -20,8 +20,7 @@ data:
     drop_unphysical_dielectric: True
 
 # Scale of each target, 1 / (mean square left after the baseline a constant model predicts),
-# see e3response.stats.  Computed on the training set, used only if the weights below point to
-# them, e.g. 'w_born=${from_data.inv_ms_born}'
+# see e3response.stats, computed on the training set: the loss weights below
 from_data:
   inv_ms_born:
     _target_: e3response.stats.ResidualMeanSquare
@@ -36,14 +35,16 @@ from_data:
   inv_ms_dielectric:
     _target_: e3response.stats.ResidualMeanSquare
     field: globals.dielectric_tensor
-    baseline: isotropic
+    baseline: mean
     inverse: true
 
-# Loss weights, read by both model configs.  Born charges are O(1) and fitted most tightly; the
-# Raman weight is raised from the lab's 1 so that it is not drowned by the other two.
-w_born: 1000.
-w_raman: 10.
-w_dielectric: 100.
+# Loss weights, read by both model configs: each term starts as a relative error, the same rule
+# for both models.  On the training set: 2.2 / 0.092 / 699 (residual rms 0.68 e, 3.3, 0.038).
+# The earlier hand weights 1000 / 10 / 100 favoured the Born charges (fitted to 0.14 of their
+# scale against 0.44 for the dielectric tensor; ~0.25 for all three with these).
+w_born: ${from_data.inv_ms_born}
+w_raman: ${from_data.inv_ms_raman}
+w_dielectric: ${from_data.inv_ms_dielectric}
 
 # Sobolev model only: units of the field inside the network (see nequip_bto_sobolev.yaml)
 field_scale: 100.

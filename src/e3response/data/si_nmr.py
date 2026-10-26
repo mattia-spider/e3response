@@ -96,8 +96,15 @@ class SiNmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
         path = pathlib.Path(self._data_file)
         _LOGGER.info("Loading dataset from %s", path.absolute())
 
+        # Drop calc_id before decoding: it is a MongoDB ObjectId, which recent monty versions
+        # turn into bson.ObjectId and fail on unless pymongo is installed; nothing reads it
         with open(path, encoding="utf-8") as f:
-            entries = json.load(f, cls=MontyDecoder)
+            raw = json.load(f)
+        decoder = MontyDecoder()
+        entries = [
+            decoder.process_decoded({k: v for k, v in entry.items() if k != "calc_id"})
+            for entry in raw
+        ]
 
         structures = []
         for entry in entries:

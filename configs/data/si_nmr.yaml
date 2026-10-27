@@ -8,6 +8,9 @@ dataset:
   r_max: ${r_max}
   data_file: ${paths.data_dir}/si_nmr/si_data.json
   # limit: 50
+  # Leave out the 3 cation-free silica cells with sites below Q4 (anomalous tensors, see
+  # e3response.data.si_nmr.is_unbalanced_silica)
+  drop_unbalanced_silica: True
 strategy:
   _target_: e3response.data.GroupedRandomSplit
   fractions: [0.80, 0.10, 0.10]

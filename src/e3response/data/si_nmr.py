@@ -18,7 +18,17 @@ from e3response.data._splits import split_indices
 
 _LOGGER = logging.getLogger(__name__)
 
-__all__ = ("SiNmrDataset",)
+__all__ = ("SiNmrDataset", "is_unbalanced_silica")
+
+
+def is_unbalanced_silica(atoms: Atoms) -> bool:
+    """Whether ``atoms`` is a cell of Si and O only with a site below Q4: a non-bridging oxygen
+    with no cation to balance its charge.  The dataset has three such cells (O14Si6, two
+    O32Si16), with the largest antisymmetric shielding of the whole set; too few to be learnt,
+    they only add variance that depends on which fold they fall in."""
+    return set(atoms.get_chemical_symbols()) <= {"Si", "O"} and any(
+        q < 4 for q in atoms.arrays.get("Qn", [])
+    )
 
 
 class SiNmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
@@ -36,15 +46,19 @@ class SiNmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
         r_max: float,
         data_file: Union[str, pathlib.Path] = "data/si_nmr/si_data.json",
         limit: Optional[Union[int, str]] = None,
+        drop_unbalanced_silica: bool = False,
     ) -> None:
         """
         :param r_max: The cutoff radius used to build the graphs.
         :param data_file: The JSON file with the structures and their tensors.
         :param limit: Which structures to load, as in :func:`e3response.data._limit.apply_limit`.
+        :param drop_unbalanced_silica: Leave out the cells of :func:`is_unbalanced_silica`,
+            before ``limit`` is applied.
         """
         self._rmax: Final[float] = r_max
         self._data_file: Final[str] = str(data_file)
         self._limit = limit
+        self._drop_unbalanced_silica: Final[bool] = drop_unbalanced_silica
 
         self.structures: Final[list[Atoms]] = self._load_structures()
         # The Qn classes present in each structure, the label of a stratified split
@@ -124,6 +138,11 @@ class SiNmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
             atoms.arrays["Qn"] = entry["Qn"]
 
             structures.append(atoms)
+
+        if self._drop_unbalanced_silica:
+            kept = [atoms for atoms in structures if not is_unbalanced_silica(atoms)]
+            _LOGGER.info("Dropped %d unbalanced silica cells", len(structures) - len(kept))
+            structures = kept
 
         structures = apply_limit(structures, self._limit)
 

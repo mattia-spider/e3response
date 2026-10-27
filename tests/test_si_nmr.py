@@ -9,7 +9,7 @@ import pytest
 from tensorial import gcnn
 
 from e3response.data import GroupedRandomSplit
-from e3response.data.si_nmr import SiNmrDataset
+from e3response.data.si_nmr import SiNmrDataset, is_unbalanced_silica
 
 # Mock: 3 Q classes (Q2, Q3, Q4), 4 structures each → 12 total
 _MOCK_Q_CLASSES = [2, 3, 4]
@@ -175,3 +175,24 @@ def test_si_nmr_dataloaders(mock_structures, test_engine, monkeypatch):
         assert "nmr_active" in batch.nodes, f"{loader_fn} batch missing 'nmr_active'"
         mask = batch.nodes["nmr_active"]
         assert mask.dtype == bool, f"'nmr_active' in {loader_fn} is not bool"
+
+
+@pytest.mark.parametrize(
+    "species, qn, unbalanced",
+    [
+        (["Si", "O", "O", "O"], [3], True),  # cation-free, non-bridging O
+        (["Si", "O", "O", "O"], [4], False),  # cation-free, fully connected
+        (["Si", "O", "O", "Na"], [3], False),  # the cation balances the charge
+    ],
+)
+def test_is_unbalanced_silica(species, qn, unbalanced):
+    atoms = ase.Atoms(species, positions=np.eye(4, 3) * 2.0)
+    atoms.arrays["Qn"] = qn
+    assert is_unbalanced_silica(atoms) is unbalanced
+
+
+def test_si_nmr_drop_unbalanced_silica(mock_si_json):
+    """The mock entries are all cation-free Q3 cells: dropped when asked, kept otherwise."""
+    json_path, n_entries = mock_si_json
+    assert len(SiNmrDataset(r_max=3.0, data_file=json_path)) == n_entries
+    assert len(SiNmrDataset(r_max=3.0, data_file=json_path, drop_unbalanced_silica=True)) == 0

@@ -17,7 +17,9 @@ optimizer:
       accumulation_size: ${from_data.steps_per_epoch}
       patience: 20
       rtol: 0.0001
-      atol: 0.001
+      # Relative criterion only: the weighted BTO losses are ~0.07, where the NMR models' atol
+      # of 0.001 asks for a 1.5% gain per epoch and halves the step down to 1/4096 by epoch ~400
+      atol: 0.0
       cooldown: 5
       min_scale: 1.0e-6
 

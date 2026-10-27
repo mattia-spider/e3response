@@ -68,3 +68,7 @@ listeners:
     monitor: "val/loss"
   early_stopping:
     monitor: "val/loss"
+    # One check every 5 epochs: 40 checks = 200 epochs, as for the NMR runs.  The weighted
+    # loss is ~1 here: the default 0.001 is fine, 0.0001 only keeps it in line with BTO
+    patience: 40
+    min_delta: 0.0001

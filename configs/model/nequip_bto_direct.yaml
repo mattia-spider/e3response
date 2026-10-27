@@ -3,14 +3,21 @@
 _target_: tensorial.ReaxModule
 
 optimizer:
-  _partial_: True
-  _target_: optax.adam
-  learning_rate: 0.01
+  _target_: optax.chain
+  _args_:
+    # Same schedule as the NMR models (see nequip_nmr.yaml): Adam, then reduce_on_plateau
+    # halving the step after 20 epochs without a better training loss
+    - _target_: optax.adam
+      learning_rate: 0.01
 
-#scheduler:
-#  _target_: optax.schedules.cosine_decay_schedule
-#  init_value: 0.1
-#  decay_steps: 400
+    - _target_: optax.contrib.reduce_on_plateau
+      factor: 0.5
+      accumulation_size: ${from_data.steps_per_epoch}
+      patience: 20
+      rtol: 0.0001
+      atol: 0.001
+      cooldown: 5
+      min_scale: 1.0e-6
 
 metrics:
   BEC:

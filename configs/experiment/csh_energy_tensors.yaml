@@ -1,0 +1,62 @@
+# @package _global_
+
+# Q2 on C-S-H: energy and NMR tensors trained together, Direct vs Diff2nd_muB.
+#
+#   direct:        e3response train -i configs/train.yaml experiment=csh_energy_tensors model=nequip_nmr
+#   deriv2nd_muB:  e3response train -i configs/train.yaml experiment=csh_energy_tensors \
+#                    model=nequip_nmr_deriv2nd_muB model.loss_fn.induced_magnetic_field=false
+#
+# Each term is weighted by 1 / its residual mean square on the training set, the rule of the BTO
+# experiments, so both start at O(1).  On the full filtered set: residual rms 0.064 Ry (energy,
+# after the per-species least squares) and 27.6 ppm (tensors, after the per-species isotropic
+# part), i.e. an energy weight ~1.9e5 times the tensors'.
+
+defaults:
+  - override /data: csh_nmr
+
+data:
+  dataset:
+    limit: null  # bulk and surface cells
+
+from_data:
+  inv_ms_energy:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: globals.energy
+    baseline: species_lstsq
+    inverse: true
+  inv_ms_nmr:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: nodes.nmr_tensors
+    baseline: species_isotropic
+    inverse: true
+
+model:
+  loss_fn:
+    energy: ${from_data.inv_ms_energy}
+    nmr_tensors: ${from_data.inv_ms_nmr}
+
+  # The NMR schedule with a relative plateau criterion only: the weighted loss here is ~0.02,
+  # where the NMR models' atol of 0.001 would freeze the step (as it did for BTO)
+  optimizer:
+    _target_: optax.chain
+    _args_:
+      - _target_: optax.adam
+        learning_rate: 0.01
+
+      - _target_: optax.contrib.reduce_on_plateau
+        factor: 0.5
+        accumulation_size: ${from_data.steps_per_epoch}
+        patience: 20
+        rtol: 0.0001
+        atol: 0.0
+        cooldown: 5
+        min_scale: 1.0e-6
+
+# Keep the best checkpoint and stop early on the weighted total.  It is ~0.02, so the default
+# min_delta of 0.001 would ask for a 5% gain per improvement
+listeners:
+  model_checkpoint:
+    monitor: "val/loss"
+  early_stopping:
+    monitor: "val/loss"
+    min_delta: 0.00001

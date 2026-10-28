@@ -99,3 +99,39 @@ def test_residual_mean_square_missing_field_and_bad_baseline():
         ResidualMeanSquare("nodes.raman_tensors").create(batch)
     with pytest.raises(ValueError):
         ResidualMeanSquare("globals.dielectric_tensor", "species_isotropic")
+
+
+def test_species_lstsq_isotropic_and_contributions():
+    """A global tensor whose isotropic part is a sum of per-element terms: the residual is what is
+    left after that sum (with an anisotropic part untouched), the coefficients are the per-element
+    terms, and a batch of padding only adds nothing."""
+    from e3response.stats import SpeciesIsotropicContributions
+
+    data = [_data(25), _data(20)]
+    per_z = {8: -3.0, 22: -30.0, 56: 6.0}
+    chi, counts, batches = [], [], []
+    for n_node, z, born, diel, energy in data:
+        graph_of = np.repeat(np.arange(len(n_node)), n_node)
+        iso = np.bincount(graph_of, weights=[per_z[k] for k in z])
+        chi.append(iso[:, None, None] * np.eye(3) + rng.normal(size=(len(n_node), 3, 3)))
+        counts.append(np.stack([np.bincount(graph_of[z == k], minlength=len(n_node)) for k in (8, 22, 56)], 1))
+        b = _batch(n_node, z, born, diel, energy, pad_nodes=2, pad_graphs=1)
+        b.globals["chi"] = np.concatenate([chi[-1], rng.normal(size=(1, 3, 3)) * 50])
+        batches.append(b)
+    padding_only = _batch(*data[0], pad_nodes=2, pad_graphs=1)
+    padding_only.globals["chi"] = rng.normal(size=(len(data[0][0]) + 1, 3, 3)) * 50
+    padding_only.globals["mask"] = np.zeros(len(data[0][0]) + 1, bool)
+    batches.append(padding_only)
+
+    a_mat, c_all = np.concatenate(counts).astype(float), np.concatenate(chi)
+    iso = np.trace(c_all, axis1=1, axis2=2) / 3
+    coeffs = np.linalg.lstsq(a_mat, iso, rcond=None)[0]
+    ref = ((c_all - (a_mat @ coeffs)[:, None, None] * np.eye(3)) ** 2).mean()
+
+    got = _accumulate(ResidualMeanSquare("globals.chi", "species_lstsq_isotropic"), batches)
+    assert np.isclose(got, ref, rtol=1e-6)
+    contributions = _accumulate(
+        SpeciesIsotropicContributions("globals.chi", type_map=[8, 22, 56, 1], divide_by=2.0), batches)
+    np.testing.assert_allclose(contributions[:3], coeffs / 2.0, rtol=1e-6)
+    np.testing.assert_allclose(contributions[:3], [-1.5, -15.0, 3.0], atol=0.2)
+    assert contributions[3] == 0.0  # absent element

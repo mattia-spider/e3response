@@ -1,0 +1,178 @@
+# Direct multihead NMR model with a magnetic susceptibility head: energy, σ and χ are three
+# separate readouts of one network.  χ is a symmetric per-atom tensor plus c_Z I per species
+# (started from the least-squares per-element contributions), summed over the cell.
+# The counterpart of nequip_nmr_deriv2nd_muB_chi, where all three come from one E(B, μ).
+# Needs from_data.chi_species, see experiment/csh_energy_tensors_chi.yaml.
+
+_target_: tensorial.ReaxModule
+
+metrics:
+    nmr_tensors_rmse:
+      _target_: tensorial.gcnn.graph_metric
+      metric: rmse
+      predictions: nodes.predicted_nmr_tensors
+      targets: nodes.nmr_tensors
+      # Only the atoms that carry a label (Si, C-S-H nmr_sites); all of them when absent
+      mask: nodes.nmr_active
+
+    energy_rmse:
+      _target_: tensorial.gcnn.graph_metric
+      metric: rmse
+      predictions: globals.predicted_energy
+      targets: globals.energy
+
+    # Per-species NMR RMSE for every species in the type map gathered from the data, logged as
+    # nmr_rmse_<symbol> (nmr_rmse_H, nmr_rmse_C, ...).  Add `species: [1, 6]` to keep only some
+    nmr_rmse:
+      _target_: tensorial.gcnn.species_metrics
+      metric: rmse
+      predictions: nodes.predicted_nmr_tensors
+      targets: nodes.nmr_tensors
+      mask: nodes.nmr_active
+      atomic_numbers: ${from_data.atomic_numbers}
+
+    magnetic_susceptibility_rmse:
+      _target_: tensorial.gcnn.graph_metric
+      metric: rmse
+      predictions: globals.predicted_magnetic_susceptibility
+      targets: globals.magnetic_susceptibility
+
+optimizer:
+  _target_: optax.chain
+  _args_:
+    # Adam first: reduce_on_plateau scales whatever it is handed, and Adam's m/(sqrt(v)+eps)
+    # is scale invariant, so putting the plateau first only starves Adam once the scale
+    # underflows against eps -- which freezes training instead of decaying it.
+    - _target_: optax.adam
+      learning_rate: 0.01
+
+    - _target_: optax.contrib.reduce_on_plateau
+      factor: 0.5
+      # reax feeds the per-minibatch training loss, so aggregate exactly one epoch of them
+      # before judging a plateau; `patience` and `cooldown` are then counted in epochs, and
+      # stay correct if the batch size or the dataset size changes
+      accumulation_size: ${from_data.steps_per_epoch}
+      patience: 20
+      rtol: 0.0001
+      atol: 0.001
+      cooldown: 5
+      min_scale: 1.0e-6
+
+loss_fn:
+  _target_: e3response.losses.response_loss
+  # Energy in Ha, NMR in ppm: the weight balances the two terms by the ratio of their
+  # variances on the training set, var(NMR iso) / var(E residual after shifts),
+  # ~6200 ppm^2 / 1.16e-3 Ha^2 ~ 5e6 (first 1000; full QM9 gives ~4.7e6)
+  energy: 5000000.0
+  nmr_tensors: true
+  magnetic_susceptibility: true
+
+model:
+  _target_: tensorial.nn.Sequential
+  layers:
+    - _target_: tensorial.gcnn.atomic.SpeciesTransform
+      atomic_numbers: ${from_data.atomic_numbers}
+
+    - _target_: tensorial.gcnn.NodewiseEncoding
+      attrs:
+        species:
+          _target_: tensorial.tensors.OneHot
+          num_classes: ${from_data.n_elements}
+
+    - _target_: tensorial.gcnn.EdgeVectors
+
+    - _target_: tensorial.gcnn.EdgewiseEncoding
+      attrs:
+        edge_vectors:
+          _target_: tensorial.tensors.SphericalHarmonic
+          irreps:
+            _target_: tensorial.make_irreps
+            mul: 1
+            ell_max: ${oc.select:ell_max,2}
+            parity: sh
+          normalise: True
+
+    - _target_: tensorial.gcnn.RadialBasisEdgeEncoding
+      r_max: ${r_max}
+
+    # Hidden irreps: `mul` channels of every irrep up to `ell_max`, see
+    # tensorial.make_irreps.  Override per run, e.g. `mul=16 ell_max=3 num_layers=4`.
+    # Reduce the number passing this point
+    - _target_: tensorial.gcnn.NodewiseLinear
+      field: attributes
+      irreps_out:
+        _target_: tensorial.make_irreps
+        mul: ${oc.select:mul,8}
+        ell_max: ${oc.select:ell_max,2}
+        parity: e + o
+
+    - _target_: tensorial.gcnn.Nequip
+      hidden_irreps:
+        _target_: tensorial.make_irreps
+        mul: ${oc.select:mul,8}
+        ell_max: ${oc.select:ell_max,2}
+        parity: e + o
+      num_layers: ${oc.select:num_layers,3}
+      num_species: ${from_data.n_elements}
+      avg_num_neighbours: ${from_data.avg_num_neighbours}
+
+    # No NodewiseLinear bottleneck to mul_readout here: the readout below reads the whole
+    # stack (the QM9 runs were all trained this way)
+
+    # Energy head, reads the shared trunk in `features` alongside the NMR head below
+    - _target_: tensorial.gcnn.NodewiseLinear
+      irreps_out: 1x0e
+      out_field: energy # Per-atom energy
+
+    # Per-species baseline, so the energy head learns residuals rather than the ~-408 offset
+    - _target_: tensorial.gcnn.atomic.per_species_rescale
+      num_types: ${from_data.n_elements}
+      field: nodes.energy
+      out_field: nodes.energy
+      shifts: ${from_data.energy_shifts}
+      scales: 1.0 # pin it: a learnable scale would rescale dE/dmu per species
+
+    # Total energy
+    - _target_: tensorial.gcnn.NodewiseReduce
+      field: energy
+      out_field: predicted_energy
+      as_array: True # GraphMetric has no as_array() of its own, unlike gcnn.Loss
+
+    # Per atom NMR tensors
+    - _target_: tensorial.gcnn.NodewiseLinear
+      irreps_out: 1x0e + 1x1e + 1x2e
+      out_field: predicted_nmr_tensors
+
+    - _target_: tensorial.gcnn.NodewiseDecoding
+      in_field: predicted_nmr_tensors
+      attrs:
+        predicted_nmr_tensors:
+          _target_: tensorial.CartesianTensor
+          formula: ij
+          i: 1e
+          j: 1e
+
+    # Magnetic susceptibility of the cell: a symmetric per-atom contribution plus c_Z I, summed
+    - _target_: tensorial.gcnn.NodewiseLinear
+      irreps_out: 1x0e + 1x2e
+      out_field: susceptibility_contribution
+
+    - _target_: tensorial.gcnn.NodewiseDecoding
+      in_field: susceptibility_contribution
+      attrs:
+        susceptibility_contribution:
+          _target_: tensorial.CartesianTensor
+          formula: ij=ji
+          i: 1e
+          j: 1e
+
+    - _target_: e3response.magnetic.SpeciesIsotropicShift
+      num_species: ${from_data.n_elements}
+      field: susceptibility_contribution
+      init_values: ${from_data.chi_species}
+
+    - _target_: tensorial.gcnn.NodewiseReduce
+      field: susceptibility_contribution
+      out_field: predicted_magnetic_susceptibility
+      reduce: sum
+      as_array: True

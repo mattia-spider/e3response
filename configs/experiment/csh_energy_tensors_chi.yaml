@@ -1,0 +1,51 @@
+# @package _global_
+
+# C-S-H with three labels: energy, NMR tensors and the magnetic susceptibility χ of the cell,
+# Direct multihead vs Diff2nd_muB (σ = ∂²E/∂μ∂B and χ = -∂²E/∂B² from one energy).
+#
+#   direct:        e3response train -i configs/train.yaml experiment=csh_energy_tensors_chi model=nequip_nmr_chi
+#   deriv2nd_muB:  e3response train -i configs/train.yaml experiment=csh_energy_tensors_chi \
+#                    model=nequip_nmr_deriv2nd_muB_chi model.loss_fn.induced_magnetic_field=false
+#
+# Na_csh_v2.json, with χ_bare (pGv, 10^-6 cm^3 per mole of cells) from the GIPAW output.  Only the
+# cells whose χ is converged are used, every one with all three labels: the cells of
+# Na_csh_filtered.json (`keep: v1`) whose f-sum rule error is below 0.01, 329 = every bulk cell and
+# 26 of 62 surfaces (beyond that threshold χ is off by up to 10^3).  `keep=all` adds the converged
+# cells the first filter dropped for an H2 or a Si not 4-coordinated: 354, 47 surfaces.  A subset of
+# the cells of csh_energy_tensors, so the folds differ from its runs: for an E + σ baseline on the
+# same cells, set `model.loss_fn.magnetic_susceptibility=false`.
+# Every term is weighted by 1 / its residual mean square on the training set, as in
+# csh_energy_tensors; for χ after a sum of per-element isotropic contributions (Pascal's rule, 99%
+# of χ).
+
+defaults:
+  - csh_energy_tensors
+  - _self_
+
+data:
+  dataset:
+    data_file: ${paths.data_dir}/csh_nmr/Na_csh_v2.json
+    keep: v1
+    max_fsum_err: 0.01
+
+# Converts the derivative model's E/B² into 10^-6 cm^3/mol (E in Ry, B in the model's units).
+# With BB_scale 30 the network's B-B curvature starts at ~3 x chi_scale per cell (mul16 n3 test),
+# the size of the χ left after the per-species fit (2-6) at chi_scale ~1; at 10 and above χ starts
+# an order of magnitude off and recovers slowly
+chi_scale: 1.0
+
+from_data:
+  inv_ms_chi:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: globals.magnetic_susceptibility
+    baseline: species_lstsq_isotropic
+    inverse: true
+  # Per-element contributions to χ (label units), to start the species terms of both models from
+  chi_species:
+    _target_: e3response.stats.SpeciesIsotropicContributions
+    field: globals.magnetic_susceptibility
+    type_map: ${from_data.atomic_numbers}
+
+model:
+  loss_fn:
+    magnetic_susceptibility: ${from_data.inv_ms_chi}

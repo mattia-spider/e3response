@@ -23,3 +23,5 @@ NMR_TENSORS: Final[str] = "nmr_tensors"
 NMR_ACTIVE: Final[str] = "nmr_active"
 
 
+MAGNETIZATION: Final[str] = "magnetization"
+MAGNETIC_SUSCEPTIBILITY: Final[str] = "magnetic_susceptibility"

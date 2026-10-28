@@ -439,18 +439,32 @@ class SpeciesPolarizability(linen.Module):
     all of χ from terms that also depend on the positions, so χ can only grow as fast as R = ∂χ/∂u
     allows.  It plays the role that species-dependent constants play in a direct readout.  Place it
     after the total energy and before any rescaling of the energy.
+
+    Any field works: with ``electric_field_key: external_magnetic_field`` it is the per-species
+    diamagnetism of the NMR models, which adds Σ_i α_{Z_i} I to χ = -∂²E/∂B² and nothing to σ.
+    ``init_values`` starts each species from its own value (e.g. from
+    :class:`e3response.stats.SpeciesIsotropicContributions`), instead of ``init_value`` for all.
+
+    ``unit`` sets the units of α: the energy gets -½ Σ α/unit |ε|².  With the constant that converts
+    the model's -∂²E/∂ε² into the label's (MagneticSusceptibility's ``scale``), α is in the label's
+    units, so that an optimiser step on α moves the predicted tensor by the same amount whatever
+    that constant is.
     """
 
     num_species: int
     electric_field_key: str = keys.EXTERNAL_ELECTRIC_FIELD
     energy_key: str = predicted(atomic.TOTAL_ENERGY)
     init_value: float = 0.0
+    init_values: Sequence[float] | None = None
+    unit: float = 1.0
 
     @linen.compact
     def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
-        alpha = self.param(
-            "alpha", lambda *_: jnp.full((self.num_species,), self.init_value), (self.num_species,)
-        )
+        if self.init_values is not None:
+            start = jnp.asarray(self.init_values, dtype=float).reshape(self.num_species)
+        else:
+            start = jnp.full((self.num_species,), self.init_value)
+        alpha = self.param("alpha", lambda *_: start, (self.num_species,))
         species = graph.nodes[gcnn.keys.SPECIES].reshape(-1)
         n_graph = graph.n_node.shape[0]
         node_graph = jnp.repeat(jnp.arange(n_graph), graph.n_node, total_repeat_length=species.shape[0])
@@ -458,7 +472,7 @@ class SpeciesPolarizability(linen.Module):
         field = jnp.asarray(graph.globals[self.electric_field_key])
         field_sq = jnp.sum(field**2, axis=-1)  # (3,) shared field -> scalar, (G, 3) -> (G,)
         energy = graph.globals[self.energy_key]
-        delta = -0.5 * alpha_graph * field_sq
+        delta = -0.5 * alpha_graph / self.unit * field_sq
         return (
             gcnn.experimental.update_graph(graph)
             .set(("globals", self.energy_key), energy + delta.reshape(energy.shape))

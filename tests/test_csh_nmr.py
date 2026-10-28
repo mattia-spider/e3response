@@ -204,3 +204,52 @@ def test_csh_nmr_sites_in_graphs(mock_csh_json):
     all_active = CshNmrDataset(r_max=3.0, data_file=mock_csh_json, nmr_sites=[1])
     assert not np.asarray(none_active[0].nodes[keys.NMR_ACTIVE]).any()
     assert np.asarray(all_active[0].nodes[keys.NMR_ACTIVE]).all()
+
+
+def _v2_entry(seed: int, struct_type: str, **quality) -> dict:
+    """A Na_csh_v2.json entry: the v1 fields plus the susceptibility and the quality metrics."""
+    rng = np.random.default_rng(seed)
+    entry = _make_entry(seed, struct_type)
+    entry.update(source=f"{struct_type}/shuffled_{seed}", chi_HH=(rng.random((3, 3)) - 500.0).tolist(),
+                 sigma_macro=(7.5 * np.eye(3)).tolist(), fsum_err=0.001, anti_O=5.0, n_h2=0, n_si_not4=0,
+                 listed_bad=False)
+    entry.update(quality)
+    return entry
+
+
+@pytest.fixture
+def mock_csh_v2_json(tmp_path: Path) -> Path:
+    entries = [
+        _v2_entry(0, "bulk"),
+        _v2_entry(1, "bulk", fsum_err=0.002),
+        _v2_entry(2, "surf", fsum_err=0.05),  # kept by v1, χ not labelled
+        _v2_entry(3, "surf", anti_O=9.5, fsum_err=0.4),  # dropped by v1 (anti_O)
+        _v2_entry(4, "surf", n_h2=1),  # dropped by v1 (H2), converged
+        _v2_entry(5, "surf", listed_bad=True, fsum_err=3.0),  # dropped by v1 (first build)
+        _v2_entry(6, "surf", fsum_err=0.005),
+    ]
+    path = tmp_path / "csh_v2.json"
+    path.write_text(json.dumps(entries), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    "keep, max_fsum_err, expected",
+    [("all", None, [0, 1, 2, 3, 4, 5, 6]), ("v1", None, [0, 1, 2, 6]), ("all", 0.01, [0, 1, 4, 6]),
+     ("v1", 0.01, [0, 1, 6])],
+)
+def test_csh_nmr_v2_keep(mock_csh_v2_json, keep, max_fsum_err, expected):
+    ds = CshNmrDataset(r_max=3.0, data_file=mock_csh_v2_json, keep=keep, max_fsum_err=max_fsum_err)
+    assert [int(a.info["source"].split("_")[-1]) for a in ds.structures] == expected
+
+
+def test_csh_nmr_v2_susceptibility(mock_csh_v2_json, mock_csh_json):
+    """χ_HH is a graph global of every cell kept; a v1 file has none, so its graphs are as before."""
+    ds = CshNmrDataset(r_max=3.0, data_file=mock_csh_v2_json, keep="v1", max_fsum_err=0.01)
+    entries = {e["source"]: e for e in json.loads(Path(mock_csh_v2_json).read_text())}
+    for atoms, graph in zip(ds.structures, ds):
+        np.testing.assert_allclose(np.asarray(graph.globals["magnetic_susceptibility"]).reshape(3, 3),
+                                   entries[atoms.info["source"]]["chi_HH"])
+
+    v1 = CshNmrDataset(r_max=3.0, data_file=mock_csh_json)
+    assert "magnetic_susceptibility" not in v1[0].globals

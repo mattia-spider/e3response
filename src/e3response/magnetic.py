@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 from flax import linen
 import jax.numpy as jnp
 import jraph
@@ -6,8 +8,15 @@ from tensorial.gcnn import atomic
 from tensorial.gcnn.keys import predicted
 
 from . import keys
+from .electric_linked import _field_at
 
-__all__ = "InducedMagneticField", "MagneticShieldingTensor"
+__all__ = (
+    "InducedMagneticField",
+    "MagneticShieldingTensor",
+    "Magnetization",
+    "MagneticSusceptibility",
+    "SpeciesIsotropicShift",
+)
 
 class InducedMagneticField(linen.Module):
     """
@@ -128,3 +137,111 @@ class MagneticShieldingTensor(linen.Module):
             .get()
         )
         return graph
+
+
+class Magnetization(linen.Module):
+    """Magnetic moment M_α = -∂E/∂B_α of each graph, the first link of the susceptibility chain.
+
+    Built like :class:`e3response.electric_linked.Polarization`: it differentiates at the field
+    already in the graph (zero if there is none), so that :class:`MagneticSusceptibility` wrapping
+    it sees the field dependence.  The σ chain cannot be extended this way, since
+    :class:`MagneticShieldingTensor` evaluates at a fixed field; put the two chains side by side
+    with :class:`e3response.electric_linked.LinkedBranches` instead::
+
+        - _target_: e3response.electric_linked.LinkedBranches
+          _partial_: True
+          branches:
+            - - {_target_: e3response.magnetic.InducedMagneticField, _partial_: True}
+              - {_target_: e3response.magnetic.MagneticShieldingTensor, _partial_: True}
+            - - {_target_: e3response.magnetic.Magnetization, _partial_: True}
+              - {_target_: e3response.magnetic.MagneticSusceptibility, _partial_: True}
+
+    The energy of the NMR models also reads the nuclear moments, which only the σ chain inserts:
+    here they are set to zero when absent.
+    """
+
+    energy_fn: gcnn.GraphFunction
+    energy_key: str = predicted(atomic.keys.ENERGY)
+    field_key: str = keys.EXTERNAL_MAGNETIC_FIELD
+    mu_key: str = keys.NUCLEAR_MAGNETIC_MOMENT
+    out_key: str = predicted(keys.MAGNETIZATION)
+
+    def setup(self) -> None:
+        # pylint: disable=attribute-defined-outside-init
+        self._diff = gcnn.diff(
+            self.energy_fn,
+            f"globals.{self.energy_key}:gk",
+            wrt=[f"globals.{self.field_key}:α"],
+            out=":gα",
+            return_graph=True,
+            mode="fwd",
+        )
+
+    def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
+        if self.mu_key not in graph.nodes:
+            n_nodes = graph.nodes[gcnn.keys.POSITIONS].shape[0]
+            graph = gcnn.experimental.update_graph(graph).set(("nodes", self.mu_key), jnp.zeros((n_nodes, 3))).get()
+        derivative, graph = self._diff(graph, _field_at(graph, self.field_key))
+        return gcnn.experimental.update_graph(graph).set(("globals", self.out_key), -derivative).get()
+
+
+class MagneticSusceptibility(linen.Module):
+    """Magnetic susceptibility of each graph, the field derivative of the magnetic moment the
+    chain predicts:
+
+        χ_αβ = scale · ∂M_α/∂B_β = -scale · ∂²E/∂B_α∂B_β
+
+    Extensive, one tensor per cell, like the GIPAW χ_bare in cm³ per mole of cells.  Wraps
+    :class:`Magnetization`.  ``scale`` converts the model's units of E/B² into the label's: a
+    constant, so χ stays the second field derivative of the energy whose mixed μ-B derivative
+    is σ.
+    """
+
+    magnetization_fn: gcnn.GraphFunction
+    magnetization_key: str = predicted(keys.MAGNETIZATION)
+    field_key: str = keys.EXTERNAL_MAGNETIC_FIELD
+    scale: float = 1.0
+    out_key: str = predicted(keys.MAGNETIC_SUSCEPTIBILITY)
+
+    def setup(self) -> None:
+        # pylint: disable=attribute-defined-outside-init
+        self._diff = gcnn.diff(
+            self.magnetization_fn,
+            f"globals.{self.magnetization_key}:gα",
+            wrt=[f"globals.{self.field_key}:β"],
+            out=":gαβ",
+            return_graph=True,
+            mode="fwd",
+        )
+
+    def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
+        chi, graph = self._diff(graph, _field_at(graph, self.field_key))
+        return gcnn.experimental.update_graph(graph).set(("globals", self.out_key), self.scale * chi).get()
+
+
+class SpeciesIsotropicShift(linen.Module):
+    """Add a learnable isotropic tensor per species, c_{Z_i} I, to a per-atom (3, 3) field.
+
+    For a direct readout of an extensive tensor that is nearly additive over the atoms (the
+    susceptibility: 99% of it is a sum of per-element contributions), so that the network only
+    learns what depends on the geometry.  The counterpart of
+    :class:`e3response.electric_linked.SpeciesPolarizability` in the derivative models; start both
+    from :class:`e3response.stats.SpeciesIsotropicContributions`.
+    """
+
+    num_species: int
+    field: str
+    init_values: Sequence[float] | None = None
+
+    @linen.compact
+    def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
+        start = (
+            jnp.zeros(self.num_species)
+            if self.init_values is None
+            else jnp.asarray(self.init_values, dtype=float).reshape(self.num_species)
+        )
+        shift = self.param("shift", lambda *_: start, (self.num_species,))
+        species = graph.nodes[gcnn.keys.SPECIES].reshape(-1)
+        values = graph.nodes[self.field]
+        values = values + shift[species][:, None, None] * jnp.eye(3)
+        return gcnn.experimental.update_graph(graph).set(("nodes", self.field), values).get()

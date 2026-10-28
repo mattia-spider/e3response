@@ -27,6 +27,11 @@ The baseline is what an equivariant model with no geometry information could out
   charges, NMR shielding).
 - ``species_lstsq``: a global scalar fitted as a sum of per-element contributions (the total
   energy, as :class:`tensorial.gcnn.atomic.EnergyContributionLstsq` does).
+- ``species_lstsq_isotropic``: a rank-2 global tensor whose isotropic part is fitted as a sum of
+  per-element contributions (an extensive susceptibility, nearly additive over the atoms).
+
+:class:`SpeciesIsotropicContributions` returns the per-element coefficients of the last baseline
+themselves, to start a model from them.
 
 Accumulated in float64 numpy: total energies are large and nearly cancel in the least-squares
 residual.  Values are averaged over the tensor components, like the RMSE metrics.
@@ -40,9 +45,10 @@ import reax
 from tensorial import gcnn
 from typing_extensions import override
 
-__all__ = ("ResidualMeanSquare",)
+__all__ = ("ResidualMeanSquare", "SpeciesIsotropicContributions")
 
-Baseline = Literal["zero", "mean", "isotropic", "species_isotropic", "species_lstsq"]
+Baseline = Literal["zero", "mean", "isotropic", "species_isotropic", "species_lstsq", "species_lstsq_isotropic"]
+_BASELINES = ("zero", "mean", "isotropic", "species_isotropic", "species_lstsq", "species_lstsq_isotropic")
 _N_Z = 119  # atomic numbers 0..118
 
 
@@ -64,13 +70,13 @@ class ResidualMeanSquare(reax.Metric):
         species_field: str = "nodes.atomic_numbers",
         _state: dict | None = None,
     ):
-        if baseline not in ("zero", "mean", "isotropic", "species_isotropic", "species_lstsq"):
+        if baseline not in _BASELINES:
             raise ValueError(f"Unknown baseline '{baseline}'")
         root = field.split(".")[0]
         if baseline == "species_isotropic" and root != "nodes":
             raise ValueError("species_isotropic needs a per-atom field (nodes.*)")
-        if baseline == "species_lstsq" and root != "globals":
-            raise ValueError("species_lstsq needs a per-structure field (globals.*)")
+        if baseline in ("species_lstsq", "species_lstsq_isotropic") and root != "globals":
+            raise ValueError(f"{baseline} needs a per-structure field (globals.*)")
         self.field = field
         self.baseline = baseline
         self.inverse = inverse
@@ -117,13 +123,21 @@ class ResidualMeanSquare(reax.Metric):
         elif self.baseline == "species_isotropic":
             seen = s["count_z"] > 0
             residual -= 3.0 * float((s["sum_iso_z"][seen] ** 2 / s["count_z"][seen]).sum())
-        elif self.baseline == "species_lstsq":
-            seen = np.diag(s["ata"]) > 0
-            ata, atb = s["ata"][np.ix_(seen, seen)], s["atb"][seen]
-            coeffs = np.linalg.lstsq(ata, atb, rcond=None)[0]
-            residual -= float(atb @ coeffs)  # min ||y - A c||^2 = y.y - (A^T y).c
+        elif self.baseline in ("species_lstsq", "species_lstsq_isotropic"):
+            seen, coeffs = self._lstsq(s)
+            # min ||y - A c||^2 = y.y - (A^T y).c; for the isotropic part of a tensor,
+            # ||T - a I||^2 = ||T||^2 - 3 iso^2 + 3 (iso - a)^2, so 3 times that
+            factor = 3.0 if self.baseline == "species_lstsq_isotropic" else 1.0
+            residual -= factor * float(s["atb"][seen] @ coeffs)
         mean_square = max(residual, 0.0) / (n_entries * n_comp)
         return 1.0 / mean_square if self.inverse else mean_square
+
+    @staticmethod
+    def _lstsq(s: dict) -> tuple[np.ndarray, np.ndarray]:
+        """The elements present, and their least-squares contributions."""
+        seen = np.diag(s["ata"]) > 0
+        ata, atb = s["ata"][np.ix_(seen, seen)], s["atb"][seen]
+        return seen, np.linalg.lstsq(ata, atb, rcond=None)[0]
 
     def _sums(self, graphs) -> dict:
         root, *path = self.field.split(".")
@@ -140,7 +154,7 @@ class ResidualMeanSquare(reax.Metric):
         mask = container.get(gcnn.keys.MASK) if isinstance(container, dict) else None
         mask = np.ones(n_items, bool) if mask is None else np.asarray(mask).reshape(n_items)
         mask = mask.astype(bool)
-        values = values[mask].reshape(int(mask.sum()), -1)  # one row per entry
+        values = values.reshape(n_items, -1)[mask]  # one row per entry (none if all are masked)
         n_comp = values.shape[1]
         state = {"n": float(len(values)), "sum_sq": float((values**2).sum())}
 
@@ -162,6 +176,12 @@ class ResidualMeanSquare(reax.Metric):
             counts = self._counts_per_graph(graphs)[mask]
             state["ata"] = counts.T @ counts
             state["atb"] = counts.T @ values[:, 0]
+        elif self.baseline == "species_lstsq_isotropic":
+            if n_comp != 9:
+                raise ValueError(f"{self.baseline} needs a 3x3 tensor, {self.field} has {n_comp}")
+            counts = self._counts_per_graph(graphs)[mask]
+            state["ata"] = counts.T @ counts
+            state["atb"] = counts.T @ (values[:, [0, 4, 8]].sum(axis=1) / 3.0)
 
         state["n_comp"] = float(n_comp)
         return state
@@ -181,3 +201,38 @@ class ResidualMeanSquare(reax.Metric):
         counts = np.zeros((len(n_node), _N_Z))
         np.add.at(counts, (graph_of, z), 1.0)
         return counts
+
+
+class SpeciesIsotropicContributions(ResidualMeanSquare):
+    """Per-element contributions to the isotropic part of a global rank-2 tensor, fitted by least
+    squares (the ``species_lstsq_isotropic`` baseline), in the order of ``type_map``; elements
+    absent from the data get 0.  Divided by ``divide_by``, e.g. the constant that
+    converts a model's output into the label's units, so that the result is a parameter value.
+    """
+
+    type_map: tuple = equinox.field(static=True)
+    divide_by: float = equinox.field(static=True)
+
+    def __init__(
+        self,
+        field: str,
+        type_map,
+        divide_by: float = 1.0,
+        species_field: str = "nodes.atomic_numbers",
+        _state: dict | None = None,
+    ):
+        super().__init__(field, "species_lstsq_isotropic", False, species_field, _state)
+        self.type_map = tuple(int(z) for z in type_map)
+        self.divide_by = float(divide_by)
+
+    def _with(self, state: dict | None) -> "SpeciesIsotropicContributions":
+        return type(self)(self.field, self.type_map, self.divide_by, self.species_field, state)
+
+    @override
+    def compute(self) -> list[float]:
+        if self._state is None:
+            raise RuntimeError("Nothing to compute, metric is empty!")
+        seen, coeffs = self._lstsq(self._state)
+        per_z = np.zeros(_N_Z)
+        per_z[seen] = coeffs
+        return [float(per_z[z] / self.divide_by) for z in self.type_map]

@@ -24,6 +24,27 @@ __all__ = ("CshNmrDataset",)
 # partner of a hydroxyl or water H sits at ~1.6 A or more)
 WATER_OH_CUTOFF: Final[float] = 1.25
 
+# The criteria of data/csh_nmr/filter_dataset.py, which made Na_csh_filtered.json; Na_csh_v2.json
+# carries their values for every cell, so `keep="v1"` selects the same cells from it
+V1_MAX_ANTI_O: Final[float] = 8.85  # ppm, mean Frobenius norm of the O antisymmetric shielding
+
+
+def keep_cell(entry: dict[str, Any], keep: str, max_fsum_err: Optional[float] = None) -> bool:
+    """Whether a Na_csh_v2.json cell is used.
+
+    :param keep: "all" for every cell, "v1" for the cells of Na_csh_filtered.json (none of the
+        filter_dataset.py criteria, and not in the BAD list of the first build).
+    :param max_fsum_err: also drop the cells whose f-sum rule error exceeds this.
+    """
+    if max_fsum_err is not None and entry["fsum_err"] > max_fsum_err:
+        return False
+    if keep == "all":
+        return True
+    if keep == "v1":
+        return not (entry["listed_bad"] or entry["anti_O"] > V1_MAX_ANTI_O or entry["n_h2"] > 0
+                    or entry["n_si_not4"] > 0)
+    raise ValueError(f"Unknown keep '{keep}': use 'all' or 'v1'")
+
 
 def water_atoms(atoms: Atoms) -> np.ndarray:
     """Boolean per-atom mask of the O and H atoms that form water molecules."""
@@ -88,6 +109,8 @@ class CshNmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
         data_file: Union[str, pathlib.Path] = "data/csh_nmr/Na_csh.json",
         limit: Optional[Union[int, str]] = None,
         nmr_sites: Union[str, Sequence[int], None] = "all",
+        keep: str = "all",
+        max_fsum_err: Optional[float] = None,
     ) -> None:
         """
         :param r_max: The cutoff radius used to build the graphs.
@@ -95,10 +118,16 @@ class CshNmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
         :param limit: Which structures to load, see `_apply_limit` ("bulk", "surface", N, ...).
         :param nmr_sites: which atoms the NMR loss and metrics count, see `nmr_active`; the
             others stay in the graph as environment.
+        :param keep, max_fsum_err: which cells of a file with quality metrics (Na_csh_v2.json) to
+            use, see `keep_cell`; ignored for a file without them.  A file with the magnetic
+            susceptibility gives it for every cell kept, so to train on it keep only the cells
+            whose GIPAW response converged (`max_fsum_err` 0.01: beyond, χ is off by up to 10^3).
         """
         self._rmax: Final[float] = r_max
         self._data_file: Final[str] = str(data_file)
         self._limit = limit
+        self._keep = keep
+        self._max_fsum_err = max_fsum_err
         if nmr_sites is not None and not isinstance(nmr_sites, str):
             nmr_sites = [int(z) for z in nmr_sites]  # a ListConfig when it comes from Hydra
 
@@ -126,11 +155,14 @@ class CshNmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
         atom_keys = ("numbers", "nmr_tensors")
         if keys.NMR_ACTIVE in atoms.arrays:
             atom_keys += (keys.NMR_ACTIVE,)
+        global_keys = [keys.EXTERNAL_MAGNETIC_FIELD, gcnn.atomic.TOTAL_ENERGY]
+        if keys.MAGNETIC_SUSCEPTIBILITY in atoms.info:
+            global_keys.append(keys.MAGNETIC_SUSCEPTIBILITY)
         return gcnn.atomic.graph_from_ase(
             atoms,
             r_max=self._rmax,
             atom_include_keys=atom_keys,
-            global_include_keys=[keys.EXTERNAL_MAGNETIC_FIELD, gcnn.atomic.TOTAL_ENERGY],
+            global_include_keys=global_keys,
         )
 
     def load_split(
@@ -182,6 +214,11 @@ class CshNmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
         with open(path, encoding="utf-8") as file:
             entries = json.load(file)
 
+        if entries and "fsum_err" in entries[0]:
+            n_cells = len(entries)
+            entries = [e for e in entries if keep_cell(e, self._keep, self._max_fsum_err)]
+            _LOGGER.info("Kept %d of %d cells (keep=%s, max_fsum_err=%s)", len(entries), n_cells,
+                         self._keep, self._max_fsum_err)
         structures = [self._entry_to_atoms(entry) for entry in entries]
         structures = _apply_limit(structures, self._limit)
 
@@ -203,4 +240,9 @@ class CshNmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
         # Graph globals are read from `atoms.info`; `atoms.arrays` holds per-atom data only.
         atoms.info[keys.EXTERNAL_MAGNETIC_FIELD] = np.zeros(3)
         atoms.info[gcnn.atomic.TOTAL_ENERGY] = np.asarray(entry.get("energy_Ry"))
+        atoms.info["source"] = entry.get("source")
+        if "chi_HH" in entry:
+            # chi_bare pGv, the one GIPAW uses for the macroscopic term of the shielding, in
+            # 10^-6 cm^3 per mole of cells
+            atoms.info[keys.MAGNETIC_SUSCEPTIBILITY] = np.asarray(entry["chi_HH"])
         return atoms

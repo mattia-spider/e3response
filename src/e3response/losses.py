@@ -151,7 +151,7 @@ def response_loss(
     raman_tensors: bool | float = False,
     nmr_tensors: bool | float = False,
     induced_magnetic_field: bool | float = False,
-
+    magnetic_susceptibility: bool | float = False,
 ) -> Callable[[jraph.GraphsTuple, jraph.GraphsTuple], jax.Array]:
     weights: list[float] = []
     loss_terms = []
@@ -227,6 +227,16 @@ def response_loss(
         loss_terms.append(
             L2Regularization(
                 f"nodes.{predicted(keys.INDUCED_MAGNETIC_FIELD)}",
+            )
+        )
+
+    if magnetic_susceptibility:
+        weights.append(1.0 if isinstance(magnetic_susceptibility, bool) else magnetic_susceptibility)
+        loss_terms.append(
+            gcnn.Loss(
+                optax.squared_error,
+                f"globals.{keys.MAGNETIC_SUSCEPTIBILITY}",
+                f"globals.{predicted(keys.MAGNETIC_SUSCEPTIBILITY)}",
             )
         )
 

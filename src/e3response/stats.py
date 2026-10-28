@@ -45,7 +45,7 @@ import reax
 from tensorial import gcnn
 from typing_extensions import override
 
-__all__ = ("ResidualMeanSquare", "SpeciesIsotropicContributions")
+__all__ = ("ResidualMeanSquare", "SpeciesContributions", "SpeciesIsotropicContributions")
 
 Baseline = Literal["zero", "mean", "isotropic", "species_isotropic", "species_lstsq", "species_lstsq_isotropic"]
 _BASELINES = ("zero", "mean", "isotropic", "species_isotropic", "species_lstsq", "species_lstsq_isotropic")
@@ -236,3 +236,33 @@ class SpeciesIsotropicContributions(ResidualMeanSquare):
         per_z = np.zeros(_N_Z)
         per_z[seen] = coeffs
         return [float(per_z[z] / self.divide_by) for z in self.type_map]
+
+
+class SpeciesContributions(ResidualMeanSquare):
+    """Per-element contributions to a global scalar (the total energy), fitted by least squares in
+    float64 (the ``species_lstsq`` baseline), as ``[[c_Z] for Z in type_map]``: the ``shifts`` of
+    :func:`tensorial.gcnn.atomic.per_species_rescale`.
+
+    A drop-in for :class:`tensorial.gcnn.atomic.EnergyContributionLstsq`, which solves in float32
+    on per-atom energies: with C-S-H's -4000 Ry cells, whose compositions span only 4 of the 5
+    elements (charge neutrality), its shifts leave 2.2 Ry per cell where the fit leaves 0.063.
+    Elements absent from the data get 0.
+    """
+
+    type_map: tuple = equinox.field(static=True)
+
+    def __init__(self, field: str, type_map, species_field: str = "nodes.atomic_numbers", _state: dict | None = None):
+        super().__init__(field, "species_lstsq", False, species_field, _state)
+        self.type_map = tuple(int(z) for z in type_map)
+
+    def _with(self, state: dict | None) -> "SpeciesContributions":
+        return type(self)(self.field, self.type_map, self.species_field, state)
+
+    @override
+    def compute(self) -> list[list[float]]:
+        if self._state is None:
+            raise RuntimeError("Nothing to compute, metric is empty!")
+        seen, coeffs = self._lstsq(self._state)
+        per_z = np.zeros(_N_Z)
+        per_z[seen] = coeffs
+        return [[float(per_z[z])] for z in self.type_map]

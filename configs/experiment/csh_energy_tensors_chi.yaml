@@ -28,11 +28,20 @@ data:
     keep: v1
     max_fsum_err: 0.01
 
-# Converts the derivative model's E/B² into 10^-6 cm^3/mol (E in Ry, B in the model's units).
-# With BB_scale 30 the network's B-B curvature starts at ~3 x chi_scale per cell (mul16 n3 test),
-# the size of the χ left after the per-species fit (2-6) at chi_scale ~1; at 10 and above χ starts
-# an order of magnitude off and recovers slowly
-chi_scale: 1.0
+# The network's per-atom energy is multiplied by energy_scale: at 1 it starts at O(0.1-1) Ry per
+# atom (~2 Ry per cell over the per-species fit, which leaves 0.063); at 0.01 it starts at the fit
+# (energy-only Direct, mul16: val E 0.075 -> 0.065 in 15 epochs, against 2.0 -> 0.12 at 1).
+energy_scale: 0.01
+# In the derivative model the same factor multiplies σ = ∂²E/∂μ∂B and χ = -∂²E/∂B², so the μ (x) B
+# attribute and the χ conversion are 100 times larger than they would be at energy_scale 1 (30 and
+# 1): σ and χ start exactly where they did (mul16 n3: σ 261.30, χ 7.4685 in both).  muB_scale is
+# read by the derivative model only.
+muB_scale: 3000.0
+# Converts the derivative model's E/B² into 10^-6 cm^3/mol (E in Ry, B in the model's units).  With
+# BB_scale 30 the network's B-B curvature starts at ~3 x chi_scale / 100 per cell, the size of the
+# χ left after the per-species fit (2-6) at chi_scale ~100; ten times larger, χ starts an order of
+# magnitude off and recovers slowly
+chi_scale: 100.0
 
 from_data:
   inv_ms_chi:

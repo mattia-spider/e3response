@@ -19,6 +19,13 @@ data:
     limit: null  # bulk and surface cells
 
 from_data:
+  # Per-element energies fitted in float64: tensorial's EnergyContributionLstsq (float32, per-atom)
+  # leaves 2.2 Ry per cell on these -4000 Ry cells instead of the fit's 0.063, and the pinned shifts
+  # made the network chase that error (val E 1.3-1.9 Ry in the first Q2 runs)
+  energy_shifts:
+    _target_: e3response.stats.SpeciesContributions
+    field: globals.energy
+    type_map: ${from_data.atomic_numbers}
   inv_ms_energy:
     _target_: e3response.stats.ResidualMeanSquare
     field: globals.energy

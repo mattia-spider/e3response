@@ -130,7 +130,9 @@ model:
       field: nodes.energy
       out_field: nodes.energy
       shifts: ${from_data.energy_shifts}
-      scales: 1.0 # pin it: a learnable scale would rescale dE/dmu per species
+      # Fixed, not learnt (a learnable scale would rescale dE/dmu per species).  energy_scale < 1 starts
+      # the per-atom energy near the per-species fit instead of O(0.1-1) Ry per atom
+      scales: ${oc.select:energy_scale,1.0}
 
     # Total energy
     - _target_: tensorial.gcnn.NodewiseReduce

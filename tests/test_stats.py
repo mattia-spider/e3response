@@ -135,3 +135,22 @@ def test_species_lstsq_isotropic_and_contributions():
     np.testing.assert_allclose(contributions[:3], coeffs / 2.0, rtol=1e-6)
     np.testing.assert_allclose(contributions[:3], [-1.5, -15.0, 3.0], atol=0.2)
     assert contributions[3] == 0.0  # absent element
+
+
+def test_species_contributions_float64():
+    """Per-element energies of -1e3 eV cells, in the shape per_species_rescale takes as shifts, with
+    the residual of the least-squares fit (also when one element is absent)."""
+    from e3response.stats import SpeciesContributions
+
+    data = [_data(20), _data(15)]
+    batches = [_batch(*d, pad_nodes=2, pad_graphs=1) for d in data]
+    counts, energy = [], []
+    for n_node, z, _, _, e in data:
+        graph_of = np.repeat(np.arange(len(n_node)), n_node)
+        counts.append(np.stack([np.bincount(graph_of[z == k], minlength=len(n_node)) for k in (8, 22, 56)], 1))
+        energy.append(e)
+    a, y = np.concatenate(counts).astype(float), np.concatenate(energy)
+    shifts = _accumulate(SpeciesContributions("globals.energy", type_map=[8, 22, 56, 1]), batches)
+    assert np.shape(shifts) == (4, 1) and shifts[3] == [0.0]
+    np.testing.assert_allclose(np.ravel(shifts)[:3], np.linalg.lstsq(a, y, rcond=None)[0], rtol=1e-9)
+    np.testing.assert_allclose(np.ravel(shifts)[:3], [-430.0, -1600.0, -700.0], atol=1.0)

@@ -247,6 +247,7 @@ def response_loss(
         )
 
     if loss_terms:
-        return gcnn.WeightedLoss(loss_terms, weights)
+        # floats: an integer weight from the command line (energy=258) fails WeightedLoss's type check
+        return gcnn.WeightedLoss(loss_terms, [float(w) for w in weights])
 
     return loss_terms[0]

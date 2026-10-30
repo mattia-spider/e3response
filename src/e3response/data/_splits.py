@@ -64,10 +64,20 @@ class GroupedKFoldSplit(gcnn.data.SplitStrategy):
     fold, and the rest is cut into ``n_folds`` near-equal folds: fold ``fold`` is the validation
     set, the others the training set.  Everything depends on ``seed`` alone, not on the training
     engine, so the split can be rebuilt offline (see :func:`split_indices`).
+
+    ``train_groups`` keeps only those groups in the training and validation sets; the test set
+    and the folds of the kept groups stay the same, so runs with and without it can be compared
+    structure by structure.
     """
 
     def __init__(
-        self, fold: int, n_folds: int = 5, *, test_fraction: float = 0.1, seed: int = 42
+        self,
+        fold: int,
+        n_folds: int = 5,
+        *,
+        test_fraction: float = 0.1,
+        seed: int = 42,
+        train_groups: Sequence[Hashable] | None = None,
     ) -> None:
         if not 0 <= fold < n_folds:
             raise ValueError(f"fold must be in [0, {n_folds}), got {fold}")
@@ -77,6 +87,7 @@ class GroupedKFoldSplit(gcnn.data.SplitStrategy):
         self._n_folds: Final[int] = n_folds
         self._test_fraction: Final[float] = test_fraction
         self._seed: Final[int] = seed
+        self._train_groups: Final = None if train_groups is None else tuple(train_groups)
 
     def split(self, dataset, engine: "reax.Engine", /) -> gcnn.data.Split:
         groups: Sequence[Hashable] | None = getattr(dataset, "groups", None)
@@ -92,10 +103,12 @@ class GroupedKFoldSplit(gcnn.data.SplitStrategy):
 
         rng = np.random.default_rng(self._seed)
         train, val, test = [], [], []
-        for indices in by_group.values():
+        for group, indices in by_group.items():
             order = rng.permutation(indices).tolist()
             n_test = round(self._test_fraction * len(order))
             test.extend(order[:n_test])
+            if self._train_groups is not None and group not in self._train_groups:
+                continue
             for k, fold in enumerate(np.array_split(order[n_test:], self._n_folds)):
                 (val if k == self._fold else train).extend(int(i) for i in fold)
 
@@ -104,7 +117,8 @@ class GroupedKFoldSplit(gcnn.data.SplitStrategy):
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}(fold={self._fold}, n_folds={self._n_folds}, "
-            f"test_fraction={self._test_fraction}, seed={self._seed})"
+            f"test_fraction={self._test_fraction}, seed={self._seed}, "
+            f"train_groups={self._train_groups})"
         )
 
 

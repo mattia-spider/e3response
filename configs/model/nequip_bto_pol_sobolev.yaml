@@ -129,6 +129,9 @@ model:
         mul: ${oc.select:mul,16}
         ell_max: ${oc.select:ell_max,2}
       num_layers: ${oc.select:num_layers,3}
+      # one self-connection matrix per element; without it every species shares one (the default is 1, and
+      # jit clamps the species index silently)
+      num_species: ${from_data.n_elements}
       avg_num_neighbours: ${from_data.avg_num_neighbours}
 
     - _target_: tensorial.gcnn.NodewiseLinear

@@ -93,6 +93,8 @@ model:
         ell_max: ${oc.select:ell_max,1}
         parity: o + e
       num_layers: ${oc.select:num_layers,3}
+      # one self-connection matrix per element (the default is 1, and jit clamps the species index silently)
+      num_species: ${from_data.n_elements}
       avg_num_neighbours: ${from_data.avg_num_neighbours}
 
     - _target_: tensorial.gcnn.NodewiseLinear

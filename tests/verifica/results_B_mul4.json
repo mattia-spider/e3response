@@ -1,0 +1,287 @@
+{
+ "rows": [
+  {
+   "ref_max_generic": 2.3526993131034417e-07,
+   "B4_min_component_rel": 0.1712511102951559,
+   "B4_comp_rel": [
+    [
+     0.1951,
+     0.4807,
+     0.2099
+    ],
+    [
+     0.4396,
+     0.5381,
+     0.3514
+    ],
+    [
+     0.1713,
+     1.0,
+     0.5587
+    ]
+   ],
+   "B4_antisym_over_total": 0.5537889509544217,
+   "B1_atom_rel": 0.0,
+   "B1_atom_abs": 0.0,
+   "B2_HCN_rel": 0.0,
+   "B2_HCN_abs": 0.0,
+   "B2_C2H2_rel": 0.0,
+   "B2_C2H2_abs": 0.0,
+   "B2_CO2_rel": 0.0,
+   "B2_CO2_abs": 0.0,
+   "B3_H2CO_xy_rel": 0.0,
+   "B3_H2CO_xz_yz_rel": 0.0,
+   "B3_H2CO_zx_zy_rel": 0.0,
+   "B3_H2CO_zz_rel": 0.10547113123231355,
+   "B3_C6H6_xy_rel": 0.0,
+   "B3_C6H6_xz_yz_rel": 0.0,
+   "B3_C6H6_zx_zy_rel": 0.0,
+   "B3_C6H6_zz_rel": 6.694773627676497e-15,
+   "B5_equiv_abs_err": 4.499862532288471e-22,
+   "B5_equiv_rel_err": 1.912638179994497e-15,
+   "B5_inversion_abs_err": 0.0,
+   "B5_inversion_rel_err": 0.0,
+   "model": "deriv2nd",
+   "ell_max": 2,
+   "mul": 4,
+   "num_layers": 2,
+   "seed": 0
+  },
+  {
+   "ref_max_generic": 1.3530366678978292e-06,
+   "B4_min_component_rel": 0.1961014415202173,
+   "B4_comp_rel": [
+    [
+     1.0,
+     0.7915,
+     0.5229
+    ],
+    [
+     0.1961,
+     0.6195,
+     0.504
+    ],
+    [
+     0.2284,
+     0.1985,
+     0.8754
+    ]
+   ],
+   "B4_antisym_over_total": 0.4586070775199502,
+   "B1_atom_rel": 0.0,
+   "B1_atom_abs": 0.0,
+   "B2_HCN_rel": 0.0,
+   "B2_HCN_abs": 0.0,
+   "B2_C2H2_rel": 0.0,
+   "B2_C2H2_abs": 0.0,
+   "B2_CO2_rel": 0.0,
+   "B2_CO2_abs": 0.0,
+   "B3_H2CO_xy_rel": 0.0,
+   "B3_H2CO_xz_yz_rel": 0.0,
+   "B3_H2CO_zx_zy_rel": 0.0,
+   "B3_H2CO_zz_rel": 0.28387598339606984,
+   "B3_C6H6_xy_rel": 0.0,
+   "B3_C6H6_xz_yz_rel": 0.0,
+   "B3_C6H6_zx_zy_rel": 0.0,
+   "B3_C6H6_zz_rel": 1.3677425826516342e-15,
+   "B5_equiv_abs_err": 2.8587361969832636e-21,
+   "B5_equiv_rel_err": 2.1128298033672604e-15,
+   "B5_inversion_abs_err": 0.0,
+   "B5_inversion_rel_err": 0.0,
+   "model": "deriv2nd",
+   "ell_max": 2,
+   "mul": 4,
+   "num_layers": 2,
+   "seed": 1
+  },
+  {
+   "ref_max_generic": 2.1840315151598446e-07,
+   "B4_min_component_rel": 0.17730918791247913,
+   "B4_comp_rel": [
+    [
+     0.1784,
+     0.184,
+     0.4672
+    ],
+    [
+     0.1773,
+     0.2969,
+     0.8655
+    ],
+    [
+     0.1822,
+     0.4635,
+     1.0
+    ]
+   ],
+   "B4_antisym_over_total": 0.4076427440197332,
+   "B1_atom_rel": 0.0,
+   "B1_atom_abs": 0.0,
+   "B2_HCN_rel": 0.0,
+   "B2_HCN_abs": 0.0,
+   "B2_C2H2_rel": 0.0,
+   "B2_C2H2_abs": 0.0,
+   "B2_CO2_rel": 0.0,
+   "B2_CO2_abs": 0.0,
+   "B3_H2CO_xy_rel": 0.0,
+   "B3_H2CO_xz_yz_rel": 0.0,
+   "B3_H2CO_zx_zy_rel": 0.0,
+   "B3_H2CO_zz_rel": 0.2014461483351132,
+   "B3_C6H6_xy_rel": 0.0,
+   "B3_C6H6_xz_yz_rel": 0.0,
+   "B3_C6H6_zx_zy_rel": 0.0,
+   "B3_C6H6_zz_rel": 5.206155030745844e-15,
+   "B5_equiv_abs_err": 5.293955920339377e-22,
+   "B5_equiv_rel_err": 2.423937513535341e-15,
+   "B5_inversion_abs_err": 0.0,
+   "B5_inversion_rel_err": 0.0,
+   "model": "deriv2nd",
+   "ell_max": 2,
+   "mul": 4,
+   "num_layers": 2,
+   "seed": 2
+  },
+  {
+   "ref_max_generic": 1.7287038872889058e-07,
+   "B4_min_component_rel": 0.34076244607390405,
+   "B4_comp_rel": [
+    [
+     0.4002,
+     0.5175,
+     0.3579
+    ],
+    [
+     0.4026,
+     0.4021,
+     0.3748
+    ],
+    [
+     0.3408,
+     0.6207,
+     1.0
+    ]
+   ],
+   "B4_antisym_over_total": 0.4279510374787264,
+   "B1_atom_rel": 0.0,
+   "B1_atom_abs": 0.0,
+   "B2_HCN_rel": 0.0,
+   "B2_HCN_abs": 0.0,
+   "B2_C2H2_rel": 0.0,
+   "B2_C2H2_abs": 0.0,
+   "B2_CO2_rel": 0.0,
+   "B2_CO2_abs": 0.0,
+   "B3_H2CO_xy_rel": 0.0,
+   "B3_H2CO_xz_yz_rel": 0.0,
+   "B3_H2CO_zx_zy_rel": 0.0,
+   "B3_H2CO_zz_rel": 0.04481003047133069,
+   "B3_C6H6_xy_rel": 0.0,
+   "B3_C6H6_xz_yz_rel": 0.0,
+   "B3_C6H6_zx_zy_rel": 0.0,
+   "B3_C6H6_zz_rel": 6.03795470028281e-15,
+   "B5_equiv_abs_err": 7.7258669212452785e-22,
+   "B5_equiv_rel_err": 4.469167321282312e-15,
+   "B5_inversion_abs_err": 0.0,
+   "B5_inversion_rel_err": 0.0,
+   "model": "deriv2nd",
+   "ell_max": 2,
+   "mul": 4,
+   "num_layers": 3,
+   "seed": 0
+  },
+  {
+   "ref_max_generic": 1.8616611281884434e-06,
+   "B4_min_component_rel": 0.23906763374429313,
+   "B4_comp_rel": [
+    [
+     1.0,
+     0.5173,
+     0.2497
+    ],
+    [
+     0.2571,
+     0.6293,
+     0.2391
+    ],
+    [
+     0.5231,
+     0.6832,
+     0.9508
+    ]
+   ],
+   "B4_antisym_over_total": 0.43606395259283437,
+   "B1_atom_rel": 0.0,
+   "B1_atom_abs": 0.0,
+   "B2_HCN_rel": 0.0,
+   "B2_HCN_abs": 0.0,
+   "B2_C2H2_rel": 0.0,
+   "B2_C2H2_abs": 0.0,
+   "B2_CO2_rel": 0.0,
+   "B2_CO2_abs": 0.0,
+   "B3_H2CO_xy_rel": 0.0,
+   "B3_H2CO_xz_yz_rel": 0.0,
+   "B3_H2CO_zx_zy_rel": 0.0,
+   "B3_H2CO_zz_rel": 0.23243135457863198,
+   "B3_C6H6_xy_rel": 0.0,
+   "B3_C6H6_xz_yz_rel": 0.0,
+   "B3_C6H6_zx_zy_rel": 0.0,
+   "B3_C6H6_zz_rel": 1.933868472950806e-15,
+   "B5_equiv_abs_err": 4.4998625322884706e-21,
+   "B5_equiv_rel_err": 2.417122248594847e-15,
+   "B5_inversion_abs_err": 0.0,
+   "B5_inversion_rel_err": 0.0,
+   "model": "deriv2nd",
+   "ell_max": 2,
+   "mul": 4,
+   "num_layers": 3,
+   "seed": 1
+  },
+  {
+   "ref_max_generic": 8.251496488474877e-08,
+   "B4_min_component_rel": 0.1761665358876339,
+   "B4_comp_rel": [
+    [
+     0.3543,
+     0.1762,
+     0.4686
+    ],
+    [
+     0.3655,
+     0.4808,
+     0.7711
+    ],
+    [
+     0.3083,
+     0.6553,
+     1.0
+    ]
+   ],
+   "B4_antisym_over_total": 0.35243273790887625,
+   "B1_atom_rel": 0.0,
+   "B1_atom_abs": 0.0,
+   "B2_HCN_rel": 0.0,
+   "B2_HCN_abs": 0.0,
+   "B2_C2H2_rel": 0.0,
+   "B2_C2H2_abs": 0.0,
+   "B2_CO2_rel": 0.0,
+   "B2_CO2_abs": 0.0,
+   "B3_H2CO_xy_rel": 0.0,
+   "B3_H2CO_xz_yz_rel": 0.0,
+   "B3_H2CO_zx_zy_rel": 0.0,
+   "B3_H2CO_zz_rel": 0.10385157016565416,
+   "B3_C6H6_xy_rel": 0.0,
+   "B3_C6H6_xz_yz_rel": 0.0,
+   "B3_C6H6_zx_zy_rel": 0.0,
+   "B3_C6H6_zz_rel": 2.342837447998301e-15,
+   "B5_equiv_abs_err": 2.6469779601696886e-22,
+   "B5_equiv_rel_err": 3.2078762487105286e-15,
+   "B5_inversion_abs_err": 0.0,
+   "B5_inversion_rel_err": 0.0,
+   "model": "deriv2nd",
+   "ell_max": 2,
+   "mul": 4,
+   "num_layers": 3,
+   "seed": 2
+  }
+ ],
+ "fd": []
+}

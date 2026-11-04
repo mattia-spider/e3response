@@ -1,0 +1,6 @@
+deriv2nd  l=2 mul=4 n=2 s=0 B1=0.0e+00 HCN=0.0e+00 C2H2=0.0e+00 H2CO(xy/z..)=0.0e+00/0.0e+00/0.0e+00/1.1e-01 B4min=1.7e-01 eq=1.9e-15 inv=0.0e+00 (97s)
+deriv2nd  l=2 mul=4 n=2 s=1 B1=0.0e+00 HCN=0.0e+00 C2H2=0.0e+00 H2CO(xy/z..)=0.0e+00/0.0e+00/0.0e+00/2.8e-01 B4min=2.0e-01 eq=2.1e-15 inv=0.0e+00 (84s)
+deriv2nd  l=2 mul=4 n=2 s=2 B1=0.0e+00 HCN=0.0e+00 C2H2=0.0e+00 H2CO(xy/z..)=0.0e+00/0.0e+00/0.0e+00/2.0e-01 B4min=1.8e-01 eq=2.4e-15 inv=0.0e+00 (89s)
+deriv2nd  l=2 mul=4 n=3 s=0 B1=0.0e+00 HCN=0.0e+00 C2H2=0.0e+00 H2CO(xy/z..)=0.0e+00/0.0e+00/0.0e+00/4.5e-02 B4min=3.4e-01 eq=4.5e-15 inv=0.0e+00 (109s)
+deriv2nd  l=2 mul=4 n=3 s=1 B1=0.0e+00 HCN=0.0e+00 C2H2=0.0e+00 H2CO(xy/z..)=0.0e+00/0.0e+00/0.0e+00/2.3e-01 B4min=2.4e-01 eq=2.4e-15 inv=0.0e+00 (122s)
+deriv2nd  l=2 mul=4 n=3 s=2 B1=0.0e+00 HCN=0.0e+00 C2H2=0.0e+00 H2CO(xy/z..)=0.0e+00/0.0e+00/0.0e+00/1.0e-01 B4min=1.8e-01 eq=3.2e-15 inv=0.0e+00 (119s)

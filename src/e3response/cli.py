@@ -195,6 +195,10 @@ def main_cli():
     except KeyError:
         raise ValueError(f"Unknown command: {args.command}") from None
 
+    # if args.command not in COMMANDS:
+    #     raise ValueError(f"Unknown command: {args.command}")
+    # return COMMANDS[args.command].run(args, _rest)
+    # better?
 
 if __name__ == "__main__":
     main_cli()

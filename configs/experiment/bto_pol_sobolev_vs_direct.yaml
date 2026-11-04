@@ -1,0 +1,74 @@
+# @package _global_
+
+# Direct vs Sobolev on allegro-pol's BaTiO3 (59 snapshots of 135 atoms, with energy, forces,
+# dipole moment, Born charges and polarizability):
+#
+#   direct:   e3response train -i configs/train.yaml experiment=bto_pol_sobolev_vs_direct model=nequip_bto_pol_direct
+#   sobolev:  e3response train -i configs/train.yaml experiment=bto_pol_sobolev_vs_direct model=nequip_bto_pol_sobolev
+#
+# Same stack, data, split and loss terms; only the readout differs.
+
+defaults:
+  - override /data: bto_allegro_pol
+
+from_data:
+  energy_shifts:
+    _target_: tensorial.gcnn.atomic.EnergyContributionLstsq
+    type_map: ${from_data.atomic_numbers}
+  # Scale of each target, 1 / (mean square left after the baseline a constant model predicts),
+  # see e3response.stats, computed on the training set: the loss weights below
+  inv_ms_energy:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: globals.energy
+    baseline: species_lstsq
+    inverse: true
+  inv_ms_forces:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: nodes.forces
+    baseline: zero
+    inverse: true
+  inv_ms_dipole:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: globals.dipole_moment
+    baseline: zero
+    inverse: true
+  inv_ms_born:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: nodes.born_charges
+    baseline: species_isotropic
+    inverse: true
+  inv_ms_polarizability:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: globals.polarizability
+    baseline: mean
+    inverse: true
+
+# Loss weights 1/σ², σ the spread of each label in the data that the model has to learn: the
+# energy about its mean (4.07 eV), forces (0.90 eV/Å), dipole moment (3.5 e·Å), Born charges
+# about one isotropic charge per species (0.63 e) and polarizability about its mean (0.46 e·Å²/V).
+# Each term then starts out as a relative error.
+# Computed from the training set (from_data.inv_ms_*), which reproduces the values set by hand
+# from these spreads before: 0.06, 1.2, 0.08, 2.5, 4.8 (computed 0.057, 1.25, 0.080, 2.51, 5.24)
+w_energy: ${from_data.inv_ms_energy}
+w_forces: ${from_data.inv_ms_forces}
+w_dipole: ${from_data.inv_ms_dipole}
+w_born: ${from_data.inv_ms_born}
+w_polarizability: ${from_data.inv_ms_polarizability}
+
+# Born charges need l = 2 features in a direct readout (their symmetric anisotropic part is 2e)
+ell_max: 2
+
+train:
+  check_val_every_n_epoch: 5
+
+# The default listeners watch an NMR metric: keep the best checkpoint and stop early on the
+# weighted total, which every model here logs
+listeners:
+  model_checkpoint:
+    monitor: "val/loss"
+  early_stopping:
+    monitor: "val/loss"
+    # One check every 5 epochs: 40 checks = 200 epochs, as for the NMR runs.  The weighted
+    # loss is ~1 here: the default 0.001 is fine, 0.0001 only keeps it in line with BTO
+    patience: 40
+    min_delta: 0.0001

@@ -1,5 +1,4 @@
-import collections
-import functools
+import collections.abc
 import json
 import logging
 import pathlib
@@ -11,104 +10,68 @@ import jraph
 from monty.json import MontyDecoder
 import numpy as np
 import pymatgen.io.ase
-import reax
 from tensorial import gcnn
-from typing_extensions import override
 
 from e3response import keys
-from e3response.data._limit import parse_limit
+from e3response.data._limit import apply_limit
+from e3response.data._splits import split_indices
 
 _LOGGER = logging.getLogger(__name__)
 
-__all__ = ("SiNmrDataModule",)
+__all__ = ("SiNmrDataset", "is_unbalanced_silica")
 
 
-class SiNmrDataModule(reax.DataModule):
-    """Silicon dataset containing ASE atoms objects with nmr tensors per Silicon atom, nmr active atoms mask annd Q_n classification."""
+def is_unbalanced_silica(atoms: Atoms) -> bool:
+    """Whether ``atoms`` is a cell of Si and O only with a site below Q4: a non-bridging oxygen
+    with no cation to balance its charge.  The dataset has three such cells (O14Si6, two
+    O32Si16), with the largest antisymmetric shielding of the whole set; too few to be learnt,
+    they only add variance that depends on which fold they fall in."""
+    return set(atoms.get_chemical_symbols()) <= {"Si", "O"} and any(
+        q < 4 for q in atoms.arrays.get("Qn", [])
+    )
 
-    _max_padding: gcnn.data.GraphPadding = None
+
+class SiNmrDataset(collections.abc.Sequence[jraph.GraphsTuple]):
+    """Silicon dataset containing ASE atoms objects with nmr tensors per Silicon atom, nmr
+    active atoms mask and Q_n classification.
+
+    A plain sequence of graphs, to be split and batched by
+    :class:`tensorial.gcnn.data.GraphDataModule` (see ``configs/data/si_nmr.yaml``).  Each
+    structure's Qn signature is in :attr:`groups`, for a stratified split with
+    :class:`e3response.data.GroupedRandomSplit`.
+    """
 
     def __init__(
         self,
         r_max: float,
         data_file: Union[str, pathlib.Path] = "data/si_nmr/si_data.json",
-        train_val_test_split: Sequence[Union[int, float]] = (0.8, 0.1, 0.1),
-        batch_size: int = 64,
         limit: Optional[Union[int, str]] = None,
-        stratify: bool = True,
+        drop_unbalanced_silica: bool = False,
     ) -> None:
-        super().__init__()
-
-        # Params
+        """
+        :param r_max: The cutoff radius used to build the graphs.
+        :param data_file: The JSON file with the structures and their tensors.
+        :param limit: Which structures to load, as in :func:`e3response.data._limit.apply_limit`.
+        :param drop_unbalanced_silica: Leave out the cells of :func:`is_unbalanced_silica`,
+            before ``limit`` is applied.
+        """
         self._rmax: Final[float] = r_max
         self._data_file: Final[str] = str(data_file)
-        self._train_val_test_split: Final[Sequence[Union[int, float]]] = train_val_test_split
-        self._batch_size: Final[int] = batch_size
         self._limit = limit
-        self._stratify: Final[bool] = stratify
+        self._drop_unbalanced_silica: Final[bool] = drop_unbalanced_silica
 
-        # State
-        self.batch_size_per_device = batch_size
-        self.data_train: Optional[reax.data.Dataset] = None
-        self.data_val: Optional[reax.data.Dataset] = None
-        self.data_test: Optional[reax.data.Dataset] = None
+        self.structures: Final[list[Atoms]] = self._load_structures()
+        # The Qn classes present in each structure, the label of a stratified split
+        self.groups: Final[list[tuple]] = [
+            tuple(sorted(set(atoms.arrays.get("Qn", [])))) for atoms in self.structures
+        ]
+        self._graphs: Final[list[jraph.GraphsTuple]] = list(map(self._to_graph, self.structures))
 
-    @override
-    def setup(self, stage: "reax.Stage", /) -> None:
-        if self.data_train is not None:
-            return
+    def __len__(self) -> int:
+        return len(self._graphs)
 
-        structures = self._load_structures()
-        train, val, test = self._split(structures, stage.rngs)
-
-        train_graphs = list(map(self._to_graph, train))
-        val_graphs = list(map(self._to_graph, val))
-        test_graphs = list(map(self._to_graph, test))
-
-        calc_padding = functools.partial(
-            gcnn.data.GraphBatcher.calculate_padding, batch_size=self._batch_size, with_shuffle=True
-        )
-
-        self._max_padding = gcnn.data.max_padding(
-            *map(calc_padding, (train_graphs, val_graphs, test_graphs))
-        )
-
-        self.data_train = train_graphs
-        self.data_val = val_graphs
-        self.data_test = test_graphs
-
-    def _split(
-        self, structures: list[Atoms], rngs: "nnx.Rngs"
-    ) -> tuple[list[Atoms], list[Atoms], list[Atoms]]:
-        """Split into train/val/test. Stratified by Qn signature when ``stratify`` is set
-        (default, see `_grouped_split`), otherwise a plain random split over all structures."""
-        if self._stratify:
-            return self._grouped_split(structures, rngs)
-        train, val, test = reax.data.random_split(
-            rngs, dataset=structures, lengths=self._train_val_test_split
-        )
-        return list(train), list(val), list(test)
-
-    def _grouped_split(
-        self, structures: list[Atoms], rngs: "nnx.Rngs"
-    ) -> tuple[list[Atoms], list[Atoms], list[Atoms]]:
-        """Stratified train/val/test split: groups structures by their Qn signature
-        and splits each group independently so every partition contains the same
-        ratio of Q classes."""
-        groups: dict[tuple, list] = collections.defaultdict(list)
-        for atoms in structures:
-            label = tuple(sorted(set(atoms.arrays.get("Qn", []))))
-            groups[label].append(atoms)
-
-        train, val, test = [], [], []
-        for group in groups.values():
-            g_train, g_val, g_test = reax.data.random_split(
-                rngs, dataset=group, lengths=self._train_val_test_split
-            )
-            train.extend(list(g_train))
-            val.extend(list(g_val))
-            test.extend(list(g_test))
-        return train, val, test
+    def __getitem__(self, index):
+        return self._graphs[index]
 
     def _to_graph(self, atoms: Atoms) -> jraph.GraphsTuple:
         return gcnn.atomic.graph_from_ase(
@@ -116,22 +79,23 @@ class SiNmrDataModule(reax.DataModule):
             r_max=self._rmax,
             atom_include_keys=("numbers", "nmr_tensors", "mask"),
             global_include_keys=[],
-            key_mapping={"mask": "nmr_active"},
+            # Only the atoms with a computed tensor carry a label, see losses.NmrTensorLoss
+            key_mapping={"mask": keys.NMR_ACTIVE},
         )
 
     def load_split(
         self,
         split: str,
+        strategy: "gcnn.data.SplitStrategy",
         limit: Optional[Union[int, str]] = None,
         rngs: "nnx.Rngs | None" = None,
     ) -> list[jraph.GraphsTuple]:
-        """Load only the requested split ("train"/"val"/"test") as graphs, without
-        running `setup()` or building the other splits.
-
-        Useful for post-hoc analysis (e.g. recovering exactly which structures were
-        held out at test time for an already-trained run).
+        """The graphs of one partition ("train"/"val"/"test") of `strategy`, e.g. to recover
+        which structures an already-trained run held out.
 
         :param split: which partition to load: "train", "val" or "test".
+        :param strategy: the split strategy used at training time, e.g.
+            ``GroupedRandomSplit((0.8, 0.1, 0.1))``.
         :param limit: further restricts the returned split - int N takes the first N
             structures of the split, "start:stop"/"start:stop:step" applies Python-slice
             semantics. `None` (default) returns the whole split.
@@ -139,24 +103,22 @@ class SiNmrDataModule(reax.DataModule):
             SAME split; defaults to `nnx.Rngs(0)`, REAX's own default when no
             `Trainer`/`Engine` override is given.
         """
-        if split not in ("train", "val", "test"):
-            raise ValueError(f"split must be 'train', 'val' or 'test', got {split!r}")
-        if rngs is None:
-            rngs = nnx.Rngs(0)
-
-        structures = self._load_structures()
-        train, val, test = self._split(structures, rngs)
-        split_structures = dict(zip(("train", "val", "test"), (train, val, test)))[split]
-        split_structures = split_structures[parse_limit(limit)]
-
-        return list(map(self._to_graph, split_structures))
+        indices = apply_limit(split_indices(self, strategy, split, rngs), limit)
+        return [self._graphs[i] for i in indices]
 
     def _load_structures(self) -> list[Atoms]:
         path = pathlib.Path(self._data_file)
         _LOGGER.info("Loading dataset from %s", path.absolute())
 
+        # Drop calc_id before decoding: it is a MongoDB ObjectId, which recent monty versions
+        # turn into bson.ObjectId and fail on unless pymongo is installed; nothing reads it
         with open(path, encoding="utf-8") as f:
-            entries = json.load(f, cls=MontyDecoder)
+            raw = json.load(f)
+        decoder = MontyDecoder()
+        entries = [
+            decoder.process_decoded({k: v for k, v in entry.items() if k != "calc_id"})
+            for entry in raw
+        ]
 
         structures = []
         for entry in entries:
@@ -177,42 +139,12 @@ class SiNmrDataModule(reax.DataModule):
 
             structures.append(atoms)
 
-        structures = structures[parse_limit(self._limit)]
+        if self._drop_unbalanced_silica:
+            kept = [atoms for atoms in structures if not is_unbalanced_silica(atoms)]
+            _LOGGER.info("Dropped %d unbalanced silica cells", len(structures) - len(kept))
+            structures = kept
+
+        structures = apply_limit(structures, self._limit)
 
         _LOGGER.info("Number of loaded structures: %d", len(structures))
         return structures
-
-    @override
-    def train_dataloader(self) -> reax.DataLoader:
-        if self.data_train is None:
-            raise reax.exceptions.MisconfigurationException("Call setup() before dataloader.")
-        return gcnn.data.GraphLoader(
-            self.data_train,
-            batch_size=self._batch_size,
-            padding=self._max_padding,
-            pad=True,
-        )
-
-    @override
-    def val_dataloader(self) -> reax.DataLoader:
-        if self.data_val is None:
-            raise reax.exceptions.MisconfigurationException("Call setup() before dataloader.")
-        return gcnn.data.GraphLoader(
-            self.data_val,
-            batch_size=self.batch_size_per_device,
-            shuffle=False,
-            padding=self._max_padding,
-            pad=True,
-        )
-
-    @override
-    def test_dataloader(self) -> reax.DataLoader:
-        if self.data_test is None:
-            raise reax.exceptions.MisconfigurationException("Call setup() before dataloader.")
-        return gcnn.data.GraphLoader(
-            self.data_test,
-            batch_size=self.batch_size_per_device,
-            shuffle=False,
-            padding=self._max_padding,
-            pad=True,
-        )

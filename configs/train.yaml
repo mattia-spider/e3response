@@ -32,7 +32,10 @@ task_name: "train"
 # overwrite from command line with `e3response train tags="[first_tag, second_tag]"`
 tags: [ "dev" ]
 
-r_max: 3.0
+r_max: 5.0
+mul: 8
+ell_max: 2
+num_layers: 3
 
 # Gather data use by the model before training
 from_data:
@@ -40,15 +43,25 @@ from_data:
   atomic_numbers: atomic/all_atomic_numbers
   avg_num_neighbours: atomic/avg_num_neighbours
   # force_scale: atomic/force_std
-  # energy_shifts:
-  #   _target_: tensorial.gcnn.atomic.EnergyContributionLstsq
-  #   type_map: ${from_data.atomic_numbers}
+  energy_shifts:
+    _target_: tensorial.gcnn.atomic.EnergyContributionLstsq
+    type_map: ${from_data.atomic_numbers}
+  # Optimiser steps in one epoch, used for reduce_on_plateau's accumulation_size so that its
+  # patience/cooldown are in epochs regardless of batch size
+  steps_per_epoch:
+    _target_: tensorial.reaxkit.StepsPerEpoch
+
+# Metric returned by tensorial.reaxkit.train.main, used as the objective by
+# hyperparameter sweepers.  Leave null for a plain training run.
+optimized_metric: null
 
 # set False to skip model training
 train:
-  min_epochs: 10 # prevents early stopping
-  max_epochs: 2000
-  # max_time: 00:00:00:50 # maximum time for training, in HH:MM:SS format
+  # prevents early stopping  
+  min_epochs: 100
+  max_epochs: 5000 
+  # maximum time for training, in HH:MM:SS format
+  max_time: "00:19:55:00"
   # perform a validation loop every N training epochs
   check_val_every_n_epoch: 1
 

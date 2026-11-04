@@ -5,3 +5,5 @@ csv:
   save_dir: "${paths.output_dir}"
   name: "csv/"
   prefix: ""
+  flush_logs_every_n_steps: 1
+

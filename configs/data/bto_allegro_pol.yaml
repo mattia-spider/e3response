@@ -1,0 +1,11 @@
+# allegro-pol's BaTiO3 (59 snapshots, 135 atoms): energy, forces, stress, dipole moment, Born
+# charges and polarizability.  For k-fold cross-validation use data=bto_allegro_pol_kfold.
+# The dipole moment is folded by lattice vectors, so leave it out of plain losses.
+_target_: tensorial.gcnn.data.GraphDataModule.from_random_split
+dataset:
+  _target_: e3response.data.BtoAllegroPolDataset
+  r_max: ${r_max}
+  data_dir: ${paths.data_dir}/bto_allegro_pol
+  include_electric_field: True
+batch_size: 4 # Needs to be divisible by the number of devices (e.g., if in a distributed setup)
+train_val_test_split: [0.8, 0.1, 0.1]

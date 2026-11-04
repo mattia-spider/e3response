@@ -1,0 +1,69 @@
+# @package _global_
+
+# Direct vs Sobolev comparison on BTO: the same NequIP stack, data, split and losses, differing
+# only in how the labelled tensors are produced.
+#
+#   direct:   e3response train -i configs/train.yaml experiment=bto_sobolev_vs_direct model=nequip_bto_direct
+#   sobolev:  e3response train -i configs/train.yaml experiment=bto_sobolev_vs_direct model=nequip_bto_sobolev
+#
+# nequip_bto_direct reads Born charges, Raman tensors and the dielectric tensor out of
+# separate equivariant heads; nequip_bto_sobolev reads out only an energy and obtains all three by
+# linked differentiation (e3response.electric_linked).  Neither has energy, force or
+# polarization labels to train on, as the BTO data has none.
+
+defaults:
+  - override /data: bto
+
+data:
+  dataset:
+    # 33 of the 228 structures have one dielectric eigenvalue near -64 (failed calculations)
+    drop_unphysical_dielectric: True
+
+# Scale of each target, 1 / (mean square left after the baseline a constant model predicts),
+# see e3response.stats, computed on the training set: the loss weights below
+from_data:
+  inv_ms_born:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: nodes.born_charges
+    baseline: species_isotropic
+    inverse: true
+  inv_ms_raman:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: nodes.raman_tensors
+    baseline: zero
+    inverse: true
+  inv_ms_dielectric:
+    _target_: e3response.stats.ResidualMeanSquare
+    field: globals.dielectric_tensor
+    baseline: mean
+    inverse: true
+
+# Loss weights, read by both model configs: each term starts as a relative error, the same rule
+# for both models.  On the training set: 2.2 / 0.092 / 699 (residual rms 0.68 e, 3.3, 0.038).
+# The earlier hand weights 1000 / 10 / 100 favoured the Born charges (fitted to 0.14 of their
+# scale against 0.44 for the dielectric tensor; ~0.25 for all three with these).
+w_born: ${from_data.inv_ms_born}
+w_raman: ${from_data.inv_ms_raman}
+w_dielectric: ${from_data.inv_ms_dielectric}
+
+# Sobolev model only: units of the field inside the network (see nequip_bto_sobolev.yaml)
+field_scale: 100.
+
+# Every component must be reachable by the direct heads: Born charges and the dielectric tensor
+# need 2e, Raman tensors 2o and 3o, so l up to 3
+ell_max: 3
+
+train:
+  check_val_every_n_epoch: 5
+
+# The default listeners watch an NMR metric: keep the best checkpoint and stop early on the
+# weighted total, which every model here logs
+listeners:
+  model_checkpoint:
+    monitor: "val/loss"
+  early_stopping:
+    monitor: "val/loss"
+    # One check every 5 epochs: 40 checks = 200 epochs, as for the NMR runs.  The weighted
+    # loss is ~0.1 here, so the default 0.001 would ask for a 1% gain per improvement
+    patience: 40
+    min_delta: 0.0001

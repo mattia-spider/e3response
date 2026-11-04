@@ -1,3 +1,4 @@
+import collections.abc
 from collections.abc import Callable, Iterable, Sequence
 import functools
 import logging
@@ -11,13 +12,11 @@ import ase.io
 from ase.io import espresso
 import jraph
 import numpy as np
-import reax
 from tensorial import gcnn
-from typing_extensions import override
 
 from e3response import keys
 
-__all__ = ("BtoDataModule",)
+__all__ = ("BtoDataset", "BtoDataModule")
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,11 +24,21 @@ atomic = "raman_tensors", "born_charges"
 global_tensors = ("dielectric",)
 
 
-class BtoDataModule(reax.DataModule[jraph.GraphsTuple, jraph.GraphsTuple]):
+class BtoDataset(collections.abc.Sequence[jraph.GraphsTuple]):
     """A barium titanate dataset containing various tensorial quantities created by Lorenzo
-    Bastonero"""
+    Bastonero: Born charges and Raman tensors per atom, the dielectric tensor per structure.
 
-    _max_padding: gcnn.data.GraphPadding
+    A plain sequence of graphs, to be split and batched by
+    :class:`tensorial.gcnn.data.GraphDataModule`, e.g.::
+
+        _target_: tensorial.gcnn.data.GraphDataModule.from_random_split   # or .from_kfold
+        dataset:
+          _target_: e3response.data.BtoDataset
+          r_max: ${r_max}
+          data_dir: ${paths.data_dir}/bto
+
+    The structures of all archives are pooled; they are no longer split archive by archive.
+    """
 
     def __init__(
         self,
@@ -39,182 +48,116 @@ class BtoDataModule(reax.DataModule[jraph.GraphsTuple, jraph.GraphsTuple]):
             "BTO_Pm-3m_5atoms_400K_3x3x3_ensemble.tar.gz",
             "BTO_Pm-3m_5atoms_800K_3x3x3.tar.gz",
         ),
-        tensors: tuple[str, ...] = ("raman_tensors", "born_charges", "dielectric"),
-        train_val_test_split: Sequence[int | float] = (0.8, 0.1, 0.1),
-        batch_size: int = 64,
-        include_electric_field=False,
+        tensors: Sequence[str] = ("raman_tensors", "born_charges", "dielectric"),
+        include_electric_field: bool = False,
+        drop_unphysical_dielectric: bool = False,
     ) -> None:
-        """Initialize a DataModule containing barium titenate dataset.
-
-        :param traj_file: The data directory. Defaults to `"data/"`.
-        :param train_val_test_split: The train, validation and test split.
-        :param batch_size: The batch size. Defaults to `64`.
         """
-        super().__init__()
-
-        # Params
-        self._rmax = r_max
-        self._data_dir: Final[str] = str(data_dir)
-        self._archives: Final[tuple[str, ...]] = tuple(archives)
-        self._tensors = tensors
-        self._train_val_test_split: Final[Sequence[int | float]] = train_val_test_split
-        self._batch_size: Final[int] = batch_size
-        self._include_electric_field: Final[bool] = include_electric_field
-
-        # State
-        self.batch_size_per_device = batch_size
-        self.data_train: reax.data.Dataset | None = None
-        self.data_val: reax.data.Dataset | None = None
-        self.data_test: reax.data.Dataset | None = None
-
-    @override
-    def setup(self, stage: "reax.Stage", /) -> None:
-        """Load data. Set variables: `self.data_train`, `self.data_val`, `self.data_test`.
-
-        This method is called by REAX before `trainer.fit()`, `trainer.validate()`,
-        `trainer.test()`, and `trainer.predict()`, so be careful not to execute things like random
-        split twice! Also, it is called after `self.prepare_data()` and there is a barrier in
-        between which ensures that all the processes proceed to `self.setup()` once the data is
-        prepared and available for use.
-
-        :param stage: The stage to setup. Either `"fit"`, `"validate"`, `"test"`, or `"predict"`.
-        Defaults to ``None``.
+        :param r_max: The cutoff radius used to build the graphs.
+        :param data_dir: The directory holding the archives.
+        :param archives: The archives to read, each extracted next to itself on first use.
+        :param tensors: The tensors to load, from ``raman_tensors``, ``born_charges`` and
+            ``dielectric``.
+        :param include_electric_field: Give every structure a zero external electric field, for
+            models that take the field as an input.
+        :param drop_unphysical_dielectric: Drop structures whose dielectric tensor has an
+            eigenvalue below 1 (33 of the 228 in the default archives).
         """
-        # load and split datasets only if not loaded already
-        if not self.data_train and not self.data_val and not self.data_test:
-            all_train = []
-            all_val = []
-            all_test = []
-
-            for archive in self._archives:
-                output_dir = self._extract_tarball(archive)
-
-                structures = get_structures(output_dir, self._tensors, self._include_electric_field)
-                if not structures:
-                    _LOGGER.warning("No structure extracted from archive `%s`, skipping", archive)
-                    continue
-
-                # Split up the graphs into sets
-                train, val, test = reax.data.random_split(
-                    stage.rngs, dataset=structures, lengths=self._train_val_test_split
+        for tensor in tensors:
+            if tensor not in atomic + global_tensors:
+                raise ValueError(
+                    f"Unknown tensor type name '{tensor}', choose from {atomic + global_tensors}"
                 )
-                all_train.extend(train)
-                all_val.extend(val)
-                all_test.extend(test)
 
-            global_include = []
-            atom_include = []
-            for tensor in self._tensors:
-                if tensor in atomic:
-                    atom_include.append(tensor)
-                elif tensor in global_tensors:
-                    global_include.append(tensor)
-                else:
-                    raise ValueError(
-                        f"Unknown tensor type name '{tensor}', choose from "
-                        f"{atomic + global_tensors}"
-                    )
+        structures: list[ase.Atoms] = []
+        for archive in archives:
+            output_dir = _extract_tarball(pathlib.Path(data_dir), archive)
+            found = get_structures(output_dir, tensors, include_electric_field)
+            if not found:
+                _LOGGER.warning("No structure extracted from archive `%s`, skipping", archive)
+                continue
+            if drop_unphysical_dielectric and "dielectric" in tensors:
+                found = _drop_unphysical_dielectric(found, archive)
+            structures.extend(found)
 
-            if self._include_electric_field:
-                global_include.append(keys.EXTERNAL_ELECTRIC_FIELD)
-
-            to_graph: Callable[[ase.Atoms], jraph.GraphsTuple] = functools.partial(
-                gcnn.atomic.graph_from_ase,
-                r_max=self._rmax,
-                atom_include_keys=("numbers", "forces", *atom_include),
-                global_include_keys=global_include,
-                key_mapping={"dielectric": keys.DIELECTRIC_TENSOR},
-            )
-
-            train_graphs = list(map(to_graph, all_train))
-            val_graphs = list(map(to_graph, all_val))
-            test_graphs = list(map(to_graph, all_test))
-
-            calc_padding = functools.partial(
-                gcnn.data.GraphBatcher.calculate_padding,
-                batch_size=self._batch_size,
-                with_shuffle=True,
-            )
-
-            paddings = list(map(calc_padding, (train_graphs, val_graphs, test_graphs)))
-            # Calculate the max padding we will need for any of the batches
-            self._max_padding = gcnn.data.max_padding(*paddings)
-
-            self.data_train = train_graphs
-            self.data_val = val_graphs
-            self.data_test = test_graphs
-
-    @override
-    def train_dataloader(self) -> reax.DataLoader[jraph.GraphsTuple, jraph.GraphsTuple]:
-        """Create and return the train dataloader.
-
-        :return: The train dataloader.
-        """
-        if self.data_train is None:
-            raise reax.exceptions.MisconfigurationException(
-                "Must call setup() before requesting the dataloader"
-            )
-
-        return gcnn.data.GraphLoader(
-            self.data_train,
-            batch_size=self.batch_size_per_device,
-            padding=self._max_padding,
-            pad=True,
+        global_include = [tensor for tensor in tensors if tensor in global_tensors]
+        if include_electric_field:
+            global_include.append(keys.EXTERNAL_ELECTRIC_FIELD)
+        to_graph: Callable[[ase.Atoms], jraph.GraphsTuple] = functools.partial(
+            gcnn.atomic.graph_from_ase,
+            r_max=r_max,
+            atom_include_keys=("numbers", "forces", *[t for t in tensors if t in atomic]),
+            global_include_keys=global_include,
+            key_mapping={"dielectric": keys.DIELECTRIC_TENSOR},
         )
+        self._graphs: Final[list[jraph.GraphsTuple]] = list(map(to_graph, structures))
 
-    @override
-    def val_dataloader(self) -> reax.DataLoader:
-        """Create and return the validation dataloader.
+    def __len__(self) -> int:
+        return len(self._graphs)
 
-        :return: The validation dataloader.
-        """
-        if self.data_val is None:
-            raise reax.exceptions.MisconfigurationException(
-                "Must call setup() before requesting the dataloader"
-            )
+    def __getitem__(self, index):
+        return self._graphs[index]
 
-        return gcnn.data.GraphLoader(
-            self.data_val,
-            batch_size=self.batch_size_per_device,
-            shuffle=False,
-            padding=self._max_padding,
-            pad=True,
-        )
 
-    @override
-    def test_dataloader(self) -> reax.DataLoader:
-        """Create and return the test dataloader.
+def BtoDataModule(  # pylint: disable=invalid-name
+    r_max: float,
+    data_dir: str | pathlib.Path = "data/bto",
+    archives: Sequence[str] = (
+        "BTO_Pm-3m_5atoms_400K_3x3x3_ensemble.tar.gz",
+        "BTO_Pm-3m_5atoms_800K_3x3x3.tar.gz",
+    ),
+    tensors: Sequence[str] = ("raman_tensors", "born_charges", "dielectric"),
+    train_val_test_split: Sequence[float] = (0.8, 0.1, 0.1),
+    batch_size: int = 64,
+    include_electric_field: bool = False,
+) -> gcnn.data.GraphDataModule:
+    """The previous BTO data module, kept for the configs that build it by name (the BTO example):
+    a :class:`tensorial.gcnn.data.GraphDataModule` with a random split of a :class:`BtoDataset`.
 
-        :return: The test dataloader.
-        """
-        if self.data_test is None:
-            raise reax.exceptions.MisconfigurationException(
-                "Must call setup() before requesting the dataloader"
-            )
+    New configs should build the ``GraphDataModule`` directly (see ``configs/data/bto.yaml``),
+    which also offers k-fold cross-validation and the filter for corrupted dielectric tensors.
+    """
+    dataset = BtoDataset(
+        r_max,
+        data_dir=data_dir,
+        archives=archives,
+        tensors=tensors,
+        include_electric_field=include_electric_field,
+    )
+    return gcnn.data.GraphDataModule.from_random_split(
+        dataset, train_val_test_split, batch_size=batch_size
+    )
 
-        return gcnn.data.GraphLoader(
-            self.data_test,
-            batch_size=self.batch_size_per_device,
-            shuffle=False,
-            padding=self._max_padding,
-            pad=True,
-        )
 
-    def _extract_tarball(self, tar_name: str) -> pathlib.Path:
-        data_dir = pathlib.Path(self._data_dir)
-        tar_path = data_dir / tar_name
-        output_dir = data_dir / tar_name.split(".")[0]
+def _extract_tarball(data_dir: pathlib.Path, tar_name: str) -> pathlib.Path:
+    tar_path = data_dir / tar_name
+    output_dir = data_dir / tar_name.split(".")[0]
 
-        # Extract the full tarball
-        if not output_dir.exists():
-            with tarfile.open(tar_path, "r", encoding="utf-8") as tar:
-                tar.extractall(data_dir)  # nosec
+    # Extract the full tarball
+    if not output_dir.exists():
+        with tarfile.open(tar_path, "r", encoding="utf-8") as tar:
+            tar.extractall(data_dir)  # nosec
 
-        return output_dir
+    return output_dir
 
 
 def get_tensors(root_dir: pathlib.Path, tensor_type: str, index: str) -> np.ndarray:
     return np.load(f"{root_dir}/{tensor_type}/{index}.npy")
+
+
+def _drop_unphysical_dielectric(structures: list[ase.Atoms], archive: str) -> list[ase.Atoms]:
+    """Drop structures whose dielectric tensor has an eigenvalue below 1, which no physical ε∞ has.
+
+    In the BTO archives 33 of 228 structures have one diagonal component near -64 while the others
+    are near 5, the signature of a failed calculation rather than of the material.
+    """
+    kept = [s for s in structures if np.linalg.eigvalsh(s.info["dielectric"]).min() >= 1.0]
+    if len(kept) < len(structures):
+        _LOGGER.warning(
+            "Dropped %d of %d structures with an unphysical dielectric tensor from `%s`",
+            len(structures) - len(kept), len(structures), archive,
+        )
+    return kept
 
 
 def get_structures(
@@ -233,10 +176,15 @@ def get_structures(
 
             for tensor in tensors:
                 tens = get_tensors(root_dir, tensor, structure_number)
-                structure.arrays[tensor] = tens
+                # Per-atom tensors go in `arrays`, per-structure ones in `info`, which is where
+                # graph_from_ase reads the global keys from
+                if tensor in global_tensors:
+                    structure.info[tensor] = tens
+                else:
+                    structure.arrays[tensor] = tens
 
             if include_electric_field:
-                structure.arrays[keys.EXTERNAL_ELECTRIC_FIELD] = np.zeros(3)
+                structure.info[keys.EXTERNAL_ELECTRIC_FIELD] = np.zeros(3)
         except FileNotFoundError:
             continue
 

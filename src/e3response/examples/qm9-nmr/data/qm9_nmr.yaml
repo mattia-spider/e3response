@@ -1,6 +1,8 @@
-_target_: e3response.data.qm9_nmr.Qm9NmrDataModule
-r_max: ${r_max}
-data_dir: ${paths.data_dir}/qm9_nmr/
+_target_: tensorial.gcnn.data.GraphDataModule.from_random_split
+dataset:
+  _target_: e3response.data.qm9_nmr.Qm9NmrDataset
+  r_max: ${r_max}
+  data_dir: ${paths.data_dir}/qm9_nmr/
+  limit: 10
 batch_size: 1 # Needs to be divisible by the number of devices (e.g., if in a distributed setup)
 train_val_test_split: [0.80, 0.10, 0.10]
-limit: 10

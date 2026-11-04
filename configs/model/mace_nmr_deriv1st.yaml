@@ -61,6 +61,12 @@ model:
         species:
           _target_: tensorial.tensors.OneHot
           num_classes: ${from_data.n_elements}
+
+    # B as a per-graph attribute: MACE multiplies it with the node features in every layer
+    # (global_interaction below)
+    - _target_: tensorial.gcnn.Pack
+      out_field: globals.attributes
+      attrs:
         globals.external_magnetic_field:
           _target_: tensorial.tensors.SphericalHarmonic
           irreps: 1e
@@ -110,6 +116,10 @@ model:
       max_ell: ${oc.select:ell_max,2}
       num_types: ${from_data.n_elements}
       avg_num_neighbours: ${from_data.avg_num_neighbours}
+      # The field enters every layer's product basis jointly with the node features (from
+      # globals.attributes, see the Pack above), up to this order in the field
+      global_interaction: True
+      global_correlation_order: ${oc.select:global_correlation_order,2}
 
     # B_ind is read out as 1e below and a linear map cannot change l or parity, so only the
     # 1e channels survive; everything else would be computed and discarded.

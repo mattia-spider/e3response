@@ -96,8 +96,13 @@ model:
         species:
           _target_: tensorial.tensors.OneHot
           num_classes: ${from_data.n_elements}
-        # Not normalised: the chain differentiates with respect to this field at zero, and a
-        # normalised field only carries its direction, which has no derivative there
+
+    # The field as a per-graph attribute, not a node one: MACE multiplies it with the node features in
+    # every layer (global_interaction below).  Not normalised: the chain differentiates with respect to
+    # this field at zero, and a normalised field only carries its direction, which has no derivative there
+    - _target_: tensorial.gcnn.Pack
+      out_field: globals.attributes
+      attrs:
         globals.external_electric_field:
           _target_: tensorial.tensors.SphericalHarmonic
           irreps: 0e + 1o
@@ -141,6 +146,10 @@ model:
       max_ell: ${oc.select:ell_max,2}
       num_types: ${from_data.n_elements}
       avg_num_neighbours: ${from_data.avg_num_neighbours}
+      # The field enters every layer's product basis jointly with the node features (from
+      # globals.attributes, see the Pack above), up to this order in the field
+      global_interaction: True
+      global_correlation_order: ${oc.select:global_correlation_order,2}
 
     - _target_: tensorial.gcnn.NodewiseLinear
       irreps_out: 4x0e + 4x0o + 4x1e + 4x1o + 4x2e + 4x2o + 2x3o + 2x3e

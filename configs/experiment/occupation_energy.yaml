@@ -1,0 +1,36 @@
+# @package _global_
+
+# Energy landscape of the DFT+U states of Fe(II) MOFs, learnt from the structure and the Hubbard
+# occupation matrices.  The goal is a surrogate of each structure's landscape, to search it for
+# lower-energy states, not a model that transfers to new compounds.
+#
+#   e3response train -i configs/train.yaml experiment=occupation_energy
+#   one structure: ... data.dataset.scans=[mof-hc_Usc5.7716_pk10528]
+#   another fold:  ... data.strategy.fold=1
+#
+# Defaults from the scratch checks of 2026-11-02 on mof-hc: ell_max 4 (the cage is l = 4), two
+# layers, r_max 4.5 A (the first coordination shell and the next).  With 40-75 states per
+# structure the network overfits within a few hundred steps, so early stopping is essential.
+
+defaults:
+  - override /data: occupation_energy
+  - override /model: nequip_occupation
+
+tags: [ "occupation_energy" ]
+
+r_max: 4.5
+mul: 8
+ell_max: 4
+num_layers: 2
+
+train:
+  min_epochs: 20
+  max_epochs: 2000
+
+listeners:
+  model_checkpoint:
+    monitor: "val/energy_rmse"
+  early_stopping:
+    monitor: "val/energy_rmse"
+    min_delta: 0.0
+    patience: 100

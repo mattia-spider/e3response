@@ -1,0 +1,17 @@
+# DFT+U states of Fe(II) MOFs from the constrained-occupation scans, built by
+# scripts/build_occupation_dataset.py.  The k-fold split is made within each scan group (one
+# geometry at one U), so every fold and the test set hold all groups in the same proportions.
+# `dataset.scans` restricts it to some groups or compounds, e.g. `data.dataset.scans=[mof-hc]`.
+_target_: tensorial.gcnn.data.GraphDataModule
+dataset:
+  _target_: e3response.data.occupation_energy.OccupationEnergyDataset
+  r_max: ${r_max}
+  data_file: ${paths.data_dir}/occupation_energy/fe_mof_scans.json
+  scans: null
+strategy:
+  _target_: e3response.data.GroupedKFoldSplit
+  fold: 0
+  n_folds: 5
+  test_fraction: 0.1
+  seed: 42
+batch_size: 16

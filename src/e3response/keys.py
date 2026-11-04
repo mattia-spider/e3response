@@ -25,3 +25,11 @@ NMR_ACTIVE: Final[str] = "nmr_active"
 
 MAGNETIZATION: Final[str] = "magnetization"
 MAGNETIC_SUSCEPTIBILITY: Final[str] = "magnetic_susceptibility"
+
+# Hubbard occupations (DFT+U): per-atom occupation matrices of each spin channel, zero on the atoms
+# without Hubbard states, U per atom, which atoms carry Hubbard states, and the Hubbard energy
+OCCUPATION_UP: Final[str] = "occupation_up"
+OCCUPATION_DOWN: Final[str] = "occupation_down"
+HUBBARD_U: Final[str] = "hubbard_u"
+HUBBARD_SITE: Final[str] = "hubbard_site"
+HUBBARD_ENERGY: Final[str] = "hubbard_energy"

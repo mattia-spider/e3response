@@ -17,6 +17,10 @@ is flat in B to round-off, and ``chi = -d2E/dB2`` stays whatever the per-species
 the same for every structure.  ``field_squared=True`` also appends ``|B|^2`` (0e) and the symmetric
 traceless part of ``B (x) B`` (2e), which the convolutions couple to the local environment (the
 antisymmetric 1e part of ``B x B`` is zero).
+
+:class:`NodewiseFieldSquare` does the same for a single field, e.g. the electric field of the BTO models
+(attributes ``[species one-hot, 1 (0e), eps (1o)]``): it appends ``|eps|^2`` (0e) and the symmetric
+traceless part of ``eps (x) eps`` (2e), so that ``chi = d2E/deps2`` has an explicit path.
 """
 
 import e3nn_jax as e3j
@@ -24,7 +28,7 @@ from flax import linen
 import jraph
 from tensorial.gcnn import _base, keys
 
-__all__ = ("NodewiseFieldProduct",)
+__all__ = ("NodewiseFieldProduct", "NodewiseFieldSquare")
 
 
 class NodewiseFieldProduct(linen.Module):
@@ -54,4 +58,24 @@ class NodewiseFieldProduct(linen.Module):
         if self.field_squared:
             blocks.append(self.squared_scale * e3j.tensor_product(field_b, field_b, filter_ir_out=["0e", "2e"]))
         nodes[self.out_field] = e3j.concatenate(blocks)
+        return graph._replace(nodes=nodes)
+
+
+class NodewiseFieldSquare(linen.Module):
+    """``attributes <- [attributes, scale * (F (x) F)]``, 0e + 2e, for the one ``irrep`` block F of the attributes."""
+
+    scale: float = 1.0
+    irrep: str = "1o"
+    field: str = keys.ATTRIBUTES
+    out_field: str = keys.ATTRIBUTES
+
+    @_base.shape_check
+    def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
+        nodes = dict(graph.nodes)
+        attrs: e3j.IrrepsArray = nodes[self.field]
+        field = attrs.filter(keep=self.irrep)
+        if field.irreps.dim != 3:
+            raise ValueError(f"expected exactly one {self.irrep} block in the attributes, got {attrs.irreps}")
+        square = e3j.tensor_product(field, field, filter_ir_out=["0e", "2e"])
+        nodes[self.out_field] = e3j.concatenate([attrs, self.scale * square])
         return graph._replace(nodes=nodes)

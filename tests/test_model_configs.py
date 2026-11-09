@@ -65,3 +65,27 @@ def test_edge_harmonics_follow_ell_max(path):
         assert isinstance(irreps, dict) and str(irreps.get("ell_max", "")).startswith("${oc.select:ell_max"), (
             f"{path.name}: edge spherical harmonics need make_irreps up to ell_max, got {irreps!r}"
         )
+
+
+def _after_stacks(node):
+    """The layer that follows each interaction stack in every list of layers of a config tree."""
+    if isinstance(node, dict):
+        for value in node.values():
+            yield from _after_stacks(value)
+    elif isinstance(node, list):
+        for i, value in enumerate(node[:-1]):
+            if isinstance(value, dict) and str(value.get("_target_", "")).rsplit(".", 1)[-1] in SPECIES_ARGUMENT:
+                yield node[i + 1]
+        for value in node:
+            yield from _after_stacks(value)
+
+
+@pytest.mark.parametrize("path", OURS, ids=[p.stem for p in OURS])
+def test_readouts_read_the_whole_stack(path):
+    """No NodewiseLinear bottleneck between the interaction stack and the readouts, as in the NMR models (d3a856f).
+
+    The BTO and allegro-pol configs had a fixed 4x0e + 4x0o + ... + 2x3e layer there until 2026-11.
+    """
+    for layer in _after_stacks(yaml.safe_load(path.read_text())):
+        is_linear = str(layer.get("_target_", "")).endswith("NodewiseLinear")
+        assert not is_linear or "out_field" in layer, f"{path.name}: bottleneck after the interaction stack: {layer!r}"

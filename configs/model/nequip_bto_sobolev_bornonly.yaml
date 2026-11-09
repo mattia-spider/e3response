@@ -73,7 +73,11 @@ model:
       attrs:
         edge_vectors:
           _target_: tensorial.tensors.SphericalHarmonic
-          irreps: 0e + 1o
+          irreps:
+            _target_: tensorial.make_irreps
+            mul: 1
+            ell_max: ${oc.select:ell_max,2}
+            parity: sh
           normalise: True
 
     - _target_: tensorial.gcnn.RadialBasisEdgeEncoding
@@ -100,8 +104,7 @@ model:
       num_species: ${from_data.n_elements}
       avg_num_neighbours: ${from_data.avg_num_neighbours}
 
-    - _target_: tensorial.gcnn.NodewiseLinear
-      irreps_out: 4x0e + 4x0o + 4x1e + 4x1o + 4x2e + 4x2o + 2x3o + 2x3e
+    # No NodewiseLinear bottleneck here: the readouts below read the whole stack, as in the NMR models
 
     - _target_: tensorial.gcnn.NodewiseLinear
       irreps_out: 1x0e

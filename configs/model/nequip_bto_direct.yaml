@@ -110,9 +110,7 @@ model:
       num_species: ${from_data.n_elements}
       avg_num_neighbours: ${from_data.avg_num_neighbours}
 
-    # Keep only scalars and reduce the number passing this point
-    - _target_: tensorial.gcnn.NodewiseLinear
-      irreps_out: 4x0e + 4x0o + 4x1e + 4x1o + 4x2e + 4x2o + 2x3o + 2x3e
+    # No NodewiseLinear bottleneck here: the readouts below read the whole stack, as in the NMR models
 
     # Per-atom Born effective charge tensor
     - _target_: tensorial.gcnn.NodewiseLinear

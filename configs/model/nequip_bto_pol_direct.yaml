@@ -101,7 +101,11 @@ model:
       attrs:
         edge_vectors:
           _target_: tensorial.tensors.SphericalHarmonic
-          irreps: 0e + 1o
+          irreps:
+            _target_: tensorial.make_irreps
+            mul: 1
+            ell_max: ${oc.select:ell_max,2}
+            parity: sh
           normalise: True
 
     - _target_: tensorial.gcnn.RadialBasisEdgeEncoding

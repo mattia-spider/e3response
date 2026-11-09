@@ -34,3 +34,34 @@ def test_interaction_stack_has_per_species_weights(path):
         assert args.get(argument) == "${from_data.n_elements}", (
             f"{path.name}: {target} needs {argument}: ${{from_data.n_elements}}"
         )
+
+
+def _edge_harmonics(node):
+    """Every irreps of the spherical harmonics that encode the edge directions in a config tree."""
+    if isinstance(node, dict):
+        attrs = node.get("attrs")
+        if isinstance(attrs, dict) and isinstance(attrs.get("edge_vectors"), dict):
+            yield attrs["edge_vectors"].get("irreps")
+        for value in node.values():
+            yield from _edge_harmonics(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _edge_harmonics(value)
+
+
+# the lab's own examples, kept as upstream has them
+UPSTREAM = {"mace", "nequip_electric", "nequip_electric_deriv"}
+OURS = [p for p in CONFIGS if p.stem not in UPSTREAM]
+
+
+@pytest.mark.parametrize("path", OURS, ids=[p.stem for p in OURS])
+def test_edge_harmonics_follow_ell_max(path):
+    """The edge spherical harmonics go up to the ell_max of the hidden features, as in NequIP and MACE.
+
+    A fixed 0e + 1o limits every message to the l = 1 direction of the neighbour whatever ell_max the features use (the
+    BTO and allegro-pol configs trained like this until 2026-11).
+    """
+    for irreps in _edge_harmonics(yaml.safe_load(path.read_text())):
+        assert isinstance(irreps, dict) and str(irreps.get("ell_max", "")).startswith("${oc.select:ell_max"), (
+            f"{path.name}: edge spherical harmonics need make_irreps up to ell_max, got {irreps!r}"
+        )

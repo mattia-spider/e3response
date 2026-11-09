@@ -63,7 +63,10 @@ listeners:
     monitor: "val/loss"
   early_stopping:
     monitor: "val/loss"
-    # One check every 5 epochs: 40 checks = 200 epochs, as for the NMR runs.  The weighted
+    # One check every 5 epochs: 200 checks = 1000 epochs.  The weighted val/loss of a multi-target
+    # run is dominated by its worst-learnt term (the Direct's dipole stays at the trivial error), so
+    # 200 epochs stopped runs whose Born charges and forces still improved by 15-50% (v3 Direct,
+    # 2026-11-09).  Was 40 checks = 200 epochs before 2026-11-10.  The weighted
     # loss is ~0.1 here, so the default 0.001 would ask for a 1% gain per improvement
-    patience: 40
+    patience: 200
     min_delta: 0.0001

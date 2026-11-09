@@ -55,8 +55,9 @@ w_dipole: ${from_data.inv_ms_dipole}
 w_born: ${from_data.inv_ms_born}
 w_polarizability: ${from_data.inv_ms_polarizability}
 
-# Born charges need l = 2 features in a direct readout (their symmetric anisotropic part is 2e)
-ell_max: 2
+# l up to 3 as for BTO, with the edge harmonics following it (Born charges need at least l = 2 in a
+# direct readout, their symmetric anisotropic part being 2e).  Every run before 2026-11-10 used 2.
+ell_max: 3
 
 train:
   check_val_every_n_epoch: 5

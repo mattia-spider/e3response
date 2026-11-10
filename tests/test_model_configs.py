@@ -176,3 +176,27 @@ def test_second_field_derivatives_have_the_field_product(path):
                    if str(layer.get("_target_", "")).endswith(".NodewiseFieldProduct")), (
             f"{path.name}: magnetic susceptibility without B⊗B (field_squared: True)"
         )
+
+
+def _up_to_stack(path):
+    """The model's layers up to and including its interaction stack: its inputs and features."""
+    layers = yaml.safe_load(path.read_text())["model"]["layers"]
+    for i, layer in enumerate(layers):
+        if str(layer.get("_target_", "")).rsplit(".", 1)[-1] in SPECIES_ARGUMENT:
+            return layers[: i + 1]
+    raise AssertionError(f"{path.name}: no interaction stack")
+
+
+PAIRS = [(p, p.with_name(p.name.replace("_direct", "_sobolev"))) for p in CONFIGS if p.stem.endswith("_direct")]
+PAIRS = [(direct, sobolev) for direct, sobolev in PAIRS if sobolev.exists()]
+
+
+@pytest.mark.parametrize("direct, sobolev", PAIRS, ids=[d.stem for d, _ in PAIRS])
+def test_direct_and_sobolev_differ_only_in_readouts(direct, sobolev):
+    """A Direct model and its Sobolev counterpart have the same inputs (the external field included) and the same
+    interaction stack: they differ only in how the tensors are produced.
+
+    The Direct configs had no field input until 2026-11: harmless at zero field, but at the finite fields of the
+    synthetic data set a Direct model would not see the field its labels were computed at.
+    """
+    assert _up_to_stack(direct) == _up_to_stack(sobolev), f"{direct.name} and {sobolev.name} differ before the readouts"

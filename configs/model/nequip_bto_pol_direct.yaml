@@ -89,11 +89,25 @@ model:
     - _target_: tensorial.gcnn.atomic.SpeciesTransform
       atomic_numbers: ${from_data.atomic_numbers}
 
+    # The same inputs as the Sobolev counterpart, the external field included, so that the two differ
+    # only in how the tensors are produced (tests/test_model_configs.py); the field is zero in the
+    # DFT data and per structure in the synthetic set
     - _target_: tensorial.gcnn.NodewiseEmbedding
       attrs:
         species:
           _target_: tensorial.tensors.OneHot
           num_classes: ${from_data.n_elements}
+        # Not normalised: the chain differentiates with respect to this field at zero, and a
+        # normalised field only carries its direction, which has no derivative there
+        globals.external_electric_field:
+          _target_: tensorial.tensors.SphericalHarmonic
+          irreps: 0e + 1o
+          normalise: False
+
+    # |ε|² (0e) and the symmetric traceless part of ε⊗ε (2e) appended to the node attributes, as in the Sobolev
+    # counterpart (same inputs up to the stack, tests/test_model_configs.py).  Zero at ε = 0.
+    - _target_: e3response.nodewise_product.NodewiseFieldSquare
+      scale: ${oc.select:eps2_scale,1.}
 
     - _target_: tensorial.gcnn.EdgeVectors
 

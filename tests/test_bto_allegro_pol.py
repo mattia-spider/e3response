@@ -68,3 +68,22 @@ def test_folded_dipole_loss_ignores_lattice_jumps():
     loss = losses.FoldedDipoleLoss()(graph)
     # Only the 0.2 off the nearest image counts: squared error averaged over 3 components
     np.testing.assert_allclose(loss, 0.2**2 / 3, rtol=1e-5)
+
+
+def test_folded_dipole_loss_without_cell_is_plain():
+    """Molecules have no cell: the folded loss and metric are the plain squared error / RMSE."""
+    import jax.numpy as jnp
+    import jraph
+
+    from e3response import losses
+
+    target = jnp.array([[5.5, -1.0, 0.3], [0.2, 0.1, -0.4]])
+    prediction = target + jnp.array([[-11.7, 0.0, 0.0], [0.0, 0.3, 0.0]])
+    graph = jraph.GraphsTuple(
+        nodes={}, edges=None, senders=jnp.zeros(0, int), receivers=jnp.zeros(0, int),
+        n_node=jnp.array([0, 0]), n_edge=jnp.array([0, 0]),
+        globals={keys.DIPOLE_MOMENT: target, "predicted_dipole_moment": prediction},
+    )
+    np.testing.assert_allclose(losses.FoldedDipoleLoss()(graph), (11.7**2 + 0.3**2) / 6, rtol=1e-5)
+    metric = losses.folded_dipole_metric("rmse").create(graph)
+    np.testing.assert_allclose(metric.compute(), np.sqrt((11.7**2 + 0.3**2) / 6), rtol=1e-5)

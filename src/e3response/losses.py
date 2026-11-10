@@ -34,6 +34,9 @@ def nearest_image_target(
 def _with_nearest_image(
     predictions: jraph.GraphsTuple, targets: jraph.GraphsTuple, prediction_key: str, target_key: str
 ) -> jraph.GraphsTuple:
+    if gcnn.keys.CELL not in targets.globals:
+        # Non-periodic structures (molecules): the dipole is defined, nothing to fold
+        return targets
     prediction = tensorial.base.as_array(predictions.globals[prediction_key]).reshape(-1, 3)
     target = jnp.asarray(targets.globals[target_key])
     cell = jnp.asarray(targets.globals[gcnn.keys.CELL]).reshape(-1, 3, 3)
@@ -43,7 +46,8 @@ def _with_nearest_image(
 
 class FoldedDipoleLoss(gcnn.Loss):
     """Squared error on a periodic cell's dipole moment, against the image of the target nearest
-    the prediction (see :func:`nearest_image_target`)."""
+    the prediction (see :func:`nearest_image_target`).  The plain squared error on graphs without a
+    cell (molecules), so the same config serves periodic and non-periodic data."""
 
     def __init__(
         self,

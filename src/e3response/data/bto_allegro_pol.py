@@ -61,15 +61,20 @@ class BtoAllegroPolDataset(collections.abc.Sequence[jraph.GraphsTuple]):
         labels: collections.abc.Sequence[str] = atomic + global_labels,
         include_electric_field: bool = False,
         limit: int | str | None = None,
+        filename: str = FILENAME,
     ) -> None:
         """
         :param r_max: The cutoff radius used to build the graphs.
         :param data_dir: The directory holding ``BaTiO3.xyz``, downloaded there on first use.
         :param labels: The labels to load, from ``forces``, ``born_charges``, ``energy``,
             ``stress``, ``dipole_moment`` and ``polarizability``.
-        :param include_electric_field: Give every structure a zero external electric field, for
-            models that take the field as an input.
+        :param include_electric_field: Give every structure its external electric field, for
+            models that take the field as an input: the one stored in the file
+            (``external_electric_field``, V/Å), zero if there is none.
         :param limit: Which snapshots to load, as in :func:`e3response.data._limit.apply_limit`.
+        :param filename: The extended-XYZ file in ``data_dir``.  Only allegro-pol's ``BaTiO3.xyz`` is
+            downloaded; another file, in the same layout, must already be there (e.g. the synthetic
+            QEq molecules, without stress and with a field per structure).
         """
         for label in labels:
             if label not in atomic + global_labels:
@@ -77,14 +82,14 @@ class BtoAllegroPolDataset(collections.abc.Sequence[jraph.GraphsTuple]):
                     f"Unknown label '{label}', choose from {atomic + global_labels}"
                 )
 
-        path = _ensure_file(pathlib.Path(data_dir))
+        path = _ensure_file(pathlib.Path(data_dir), filename)
         structures = [_relabel(atoms) for atoms in ase.io.read(path, index=":")]
         structures = list(apply_limit(structures, limit))
 
         global_include = [label for label in labels if label in global_labels]
         if include_electric_field:
             for structure in structures:
-                structure.info[keys.EXTERNAL_ELECTRIC_FIELD] = np.zeros(3)
+                structure.info.setdefault(keys.EXTERNAL_ELECTRIC_FIELD, np.zeros(3))
             global_include.append(keys.EXTERNAL_ELECTRIC_FIELD)
         to_graph: Callable[[ase.Atoms], jraph.GraphsTuple] = functools.partial(
             gcnn.atomic.graph_from_ase,
@@ -102,8 +107,10 @@ class BtoAllegroPolDataset(collections.abc.Sequence[jraph.GraphsTuple]):
         return self._graphs[index]
 
 
-def _ensure_file(data_dir: pathlib.Path) -> pathlib.Path:
-    path = data_dir / FILENAME
+def _ensure_file(data_dir: pathlib.Path, filename: str = FILENAME) -> pathlib.Path:
+    path = data_dir / filename
+    if not path.exists() and filename != FILENAME:
+        raise FileNotFoundError(path)
     if not path.exists():
         import urllib.request  # pylint: disable=import-outside-toplevel
 
@@ -134,7 +141,10 @@ def _relabel(atoms: ase.Atoms) -> ase.Atoms:
     relabelled.arrays[keys.BORN_CHARGES] = atoms.arrays["born_charge"].reshape(n_atoms, 3, 3)
     relabelled.arrays[keys.FORCES] = np.asarray(results["forces"])
     relabelled.info[keys.TOTAL_ENERGY] = np.asarray(atoms.info["total_energy"])
-    relabelled.info[keys.STRESS] = ase.stress.voigt_6_to_full_3x3_stress(results["stress"])
+    if "stress" in results:  # not for isolated molecules
+        relabelled.info[keys.STRESS] = ase.stress.voigt_6_to_full_3x3_stress(results["stress"])
     relabelled.info[keys.DIPOLE_MOMENT] = np.asarray(results["polarization"])
     relabelled.info[keys.POLARIZABILITY] = np.asarray(atoms.info["polarizability"]).reshape(3, 3)
+    if keys.EXTERNAL_ELECTRIC_FIELD in atoms.info:  # the field the labels were computed at
+        relabelled.info[keys.EXTERNAL_ELECTRIC_FIELD] = np.asarray(atoms.info[keys.EXTERNAL_ELECTRIC_FIELD])
     return relabelled

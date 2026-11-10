@@ -1,0 +1,23 @@
+# @package _global_
+
+# Direct vs Sobolev on the synthetic electric-response set (data=synthetic_qeq_kfold): the
+# allegro-pol experiment, with its loss terms, 1/σ² weights from the training set and listeners,
+# on isolated molecules:
+#
+#   e3response train -i configs/train.yaml experiment=synthetic_sobolev_vs_direct model=nequip_bto_pol_direct
+#   e3response train -i configs/train.yaml experiment=synthetic_sobolev_vs_direct model=nequip_bto_pol_sobolev
+
+defaults:
+  - bto_pol_sobolev_vs_direct
+  - override /data: synthetic_qeq_kfold
+
+from_data:
+  # The polarizability of a molecule grows with its size: its baseline is a sum of isotropic
+  # per-element contributions, as the Direct's per-atom constants and the Sobolev's
+  # SpeciesPolarizability give it, not one mean tensor (allegro-pol: 135 atoms in every snapshot)
+  inv_ms_polarizability:
+    baseline: species_lstsq_isotropic
+# On one regime-B molecule (one system in many geometries, as allegro-pol) the weights measure the
+# change with the geometry instead:
+#   from_data.inv_ms_dipole.baseline=mean from_data.inv_ms_polarizability.baseline=mean
+#   from_data.inv_ms_born.baseline=site_mean

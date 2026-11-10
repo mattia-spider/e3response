@@ -1,0 +1,17 @@
+# Synthetic electric-response set (nmr_project/synthetic): QM9 molecules with a charge-equilibration
+# energy, every label an exact derivative of it at the field stored with each structure (energy,
+# forces, dipole moment, Born charges, polarizability; no stress, no cell).  allegro-pol's reader and
+# k-fold split.  One directory per set, A_E0 ... A_E3 (regime A, 16000 molecules) and B_E0 ... B_E3
+# (regime B, 20 molecules x 200 geometries, molecule m at positions 200m to 200m + 199):
+#   data.dataset.limit='"random:417:0"'      # a random pool of the regime-A set: 300 in training (75 val, 41 test)
+#   data.dataset.data_dir=${paths.data_dir}/synthetic_qeq/B_E0 data.dataset.limit='"800:1000"'  # molecule 4: 144 / 36 / 20
+#   data.dataset.limit='"800:883"'           # the first 83 geometries of molecule 4: 60 / 15 / 8
+defaults:
+  - bto_allegro_pol_kfold
+  - _self_
+
+dataset:
+  data_dir: ${paths.data_dir}/synthetic_qeq/A_E0
+  filename: synthetic_qeq.xyz
+  labels: [forces, born_charges, energy, dipole_moment, polarizability]
+  limit: null

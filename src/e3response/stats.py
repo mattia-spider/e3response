@@ -25,6 +25,9 @@ The baseline is what an equivariant model with no geometry information could out
   tensor in cells of any orientation).
 - ``species_isotropic``: a rank-2 per-atom tensor's mean isotropic part for each element (Born
   charges, NMR shielding).
+- ``site_mean``: a per-atom quantity's mean over the structures, site by site, for a data set of one
+  system in many geometries (every structure has the same atoms in the same order, checked): what a
+  model learns at once is each site's average tensor, only the change with the geometry is left.
 - ``species_lstsq``: a global scalar fitted as a sum of per-element contributions (the total
   energy, as :class:`tensorial.gcnn.atomic.EnergyContributionLstsq` does).
 - ``species_lstsq_isotropic``: a rank-2 global tensor whose isotropic part is fitted as a sum of
@@ -47,8 +50,12 @@ from typing_extensions import override
 
 __all__ = ("ResidualMeanSquare", "SpeciesContributions", "SpeciesIsotropicContributions")
 
-Baseline = Literal["zero", "mean", "isotropic", "species_isotropic", "species_lstsq", "species_lstsq_isotropic"]
-_BASELINES = ("zero", "mean", "isotropic", "species_isotropic", "species_lstsq", "species_lstsq_isotropic")
+Baseline = Literal[
+    "zero", "mean", "isotropic", "species_isotropic", "site_mean", "species_lstsq", "species_lstsq_isotropic"
+]
+_BASELINES = (
+    "zero", "mean", "isotropic", "species_isotropic", "site_mean", "species_lstsq", "species_lstsq_isotropic"
+)
 _N_Z = 119  # atomic numbers 0..118
 
 
@@ -73,8 +80,8 @@ class ResidualMeanSquare(reax.Metric):
         if baseline not in _BASELINES:
             raise ValueError(f"Unknown baseline '{baseline}'")
         root = field.split(".")[0]
-        if baseline == "species_isotropic" and root != "nodes":
-            raise ValueError("species_isotropic needs a per-atom field (nodes.*)")
+        if baseline in ("species_isotropic", "site_mean") and root != "nodes":
+            raise ValueError(f"{baseline} needs a per-atom field (nodes.*)")
         if baseline in ("species_lstsq", "species_lstsq_isotropic") and root != "globals":
             raise ValueError(f"{baseline} needs a per-structure field (globals.*)")
         self.field = field
@@ -105,8 +112,10 @@ class ResidualMeanSquare(reax.Metric):
         if self._state is None:
             return other
         other_state = other._state  # pylint: disable=protected-access
-        # n_comp is the number of components per entry, the same in every batch
-        merged = {k: v if k == "n_comp" else v + other_state[k] for k, v in self._state.items()}
+        if "species" in self._state and not np.array_equal(self._state["species"], other_state["species"]):
+            raise ValueError(f"site_mean: the structures do not all have the same atoms in the same order ({self.field})")
+        # n_comp is the number of components per entry, the same in every batch; species, the atoms of every structure
+        merged = {k: v if k in ("n_comp", "species") else v + other_state[k] for k, v in self._state.items()}
         return self._with(merged)
 
     @override
@@ -123,6 +132,8 @@ class ResidualMeanSquare(reax.Metric):
         elif self.baseline == "species_isotropic":
             seen = s["count_z"] > 0
             residual -= 3.0 * float((s["sum_iso_z"][seen] ** 2 / s["count_z"][seen]).sum())
+        elif self.baseline == "site_mean":
+            residual -= float((s["sum_site"] ** 2).sum()) / (n_entries / len(s["species"]))
         elif self.baseline in ("species_lstsq", "species_lstsq_isotropic"):
             seen, coeffs = self._lstsq(s)
             # min ||y - A c||^2 = y.y - (A^T y).c; for the isotropic part of a tensor,
@@ -170,6 +181,17 @@ class ResidualMeanSquare(reax.Metric):
                 z = self._atomic_numbers(graphs)[mask]
                 state["count_z"] = np.bincount(z, minlength=_N_Z).astype(np.float64)
                 state["sum_iso_z"] = np.bincount(z, weights=iso, minlength=_N_Z)
+        elif self.baseline == "site_mean":
+            z = self._atomic_numbers(graphs)[mask]
+            n_node = np.asarray(graphs.n_node)
+            graph_mask = graphs.globals.get(gcnn.keys.MASK)
+            if graph_mask is not None:
+                n_node = n_node[np.asarray(graph_mask).reshape(-1).astype(bool)]
+            sites = z[: n_node[0]]
+            if np.any(n_node != len(sites)) or np.any(z.reshape(-1, len(sites)) != sites):
+                raise ValueError(f"site_mean: the structures do not all have the same atoms in the same order ({self.field})")
+            state["sum_site"] = values.reshape(-1, len(sites), n_comp).sum(axis=0)
+            state["species"] = sites
         elif self.baseline == "species_lstsq":
             if n_comp != 1:
                 raise ValueError(f"species_lstsq needs a scalar, {self.field} has {n_comp}")

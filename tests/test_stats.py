@@ -154,3 +154,27 @@ def test_species_contributions_float64():
     assert np.shape(shifts) == (4, 1) and shifts[3] == [0.0]
     np.testing.assert_allclose(np.ravel(shifts)[:3], np.linalg.lstsq(a, y, rcond=None)[0], rtol=1e-9)
     np.testing.assert_allclose(np.ravel(shifts)[:3], [-430.0, -1600.0, -700.0], atol=1.0)
+
+
+def test_site_mean_one_system_in_many_geometries():
+    """site_mean removes each site's mean tensor over the structures; it refuses structures whose atoms differ."""
+    z = np.array([6, 1, 8, 1])
+    sites = rng.normal(size=(len(z), 3, 3)) * 3.0
+    born = [sites + rng.normal(size=(5, len(z), 3, 3)) * 0.1 for _ in range(2)]  # two batches of 5 geometries
+    batches = [_batch([len(z)] * 5, np.tile(z, 5), b.reshape(-1, 3, 3), rng.normal(size=(5, 3, 3)), np.zeros(5),
+                      pad_nodes=3, pad_graphs=2) for b in born]
+    all_born = np.concatenate(born)
+    ref = ((all_born - all_born.mean(axis=0)) ** 2).mean()
+    got = _accumulate(ResidualMeanSquare("nodes.born_charges", "site_mean"), batches)
+    assert np.isclose(got, ref)
+    # much smaller than the spread about one isotropic charge per element, which keeps each site's own tensor
+    assert got < 0.01 * _accumulate(ResidualMeanSquare("nodes.born_charges", "species_isotropic"), batches)
+
+    reordered = _batch([len(z)] * 5, np.tile(z[::-1], 5), born[1].reshape(-1, 3, 3), np.zeros((5, 3, 3)), np.zeros(5))
+    with pytest.raises(ValueError, match="same atoms"):
+        _accumulate(ResidualMeanSquare("nodes.born_charges", "site_mean"), [batches[0], reordered])
+    other_size = _batch([3, 4], np.r_[z[:3], z], rng.normal(size=(7, 3, 3)), np.zeros((2, 3, 3)), np.zeros(2))
+    with pytest.raises(ValueError, match="same atoms"):
+        ResidualMeanSquare("nodes.born_charges", "site_mean").create(other_size)
+    with pytest.raises(ValueError, match="per-atom"):
+        ResidualMeanSquare("globals.dielectric_tensor", "site_mean")

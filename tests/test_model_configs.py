@@ -89,3 +89,89 @@ def test_readouts_read_the_whole_stack(path):
     for layer in _after_stacks(yaml.safe_load(path.read_text())):
         is_linear = str(layer.get("_target_", "")).endswith("NodewiseLinear")
         assert not is_linear or "out_field" in layer, f"{path.name}: bottleneck after the interaction stack: {layer!r}"
+
+
+# Second derivatives of the energy in a field: the module that computes each one, and the input that gives the energy
+# an explicit product of the field(s).  A NequIP stack is linear in its features (only the gates multiply them), so
+# without that input the curvature in the field stays nearly flat: σ collapses without μ⊗B (tests/verifica), χ without
+# B⊗B, and the dielectric-only Sobolev went from 0.0161 to 0.0108 with ε⊗ε (v2, test, 5 folds).
+SECOND_ORDER = {
+    "DielectricTensor": "NodewiseFieldSquare",  # χ = ∂²E/∂ε²
+    "RamanTensors": "NodewiseFieldSquare",  # ∂³E/∂ε²∂u
+    "RamanTensorsFromPolarizability": "NodewiseFieldSquare",
+    "MagneticShieldingTensor": "NodewiseFieldProduct",  # σ = ∂²E/∂μ∂B, when the energy is the root (InducedMagneticField)
+    "MagneticSusceptibility": "NodewiseFieldProduct",  # χ = -∂²E/∂B², needs field_squared
+}
+# configs left without the product on purpose: the controls of the claim
+WITHOUT_PRODUCT = {
+    "nequip_nmr_deriv2nd": "Diff2nd without μ⊗B, the Q1 control",
+    "mace_nmr_deriv2nd": "control for μ⊗B from MACE's product basis (mace_nmr_deriv2nd_muB has it explicit)",
+}
+# the electric field enters MACE only as a global attribute (Pack), where NodewiseFieldSquare cannot read it
+MACE_GLOBAL_FIELD = {"mace_bto_sobolev", "mace_bto_pol_sobolev"}
+
+
+def _targets(node):
+    if isinstance(node, dict):
+        yield str(node.get("_target_", "")), node
+        for value in node.values():
+            yield from _targets(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _targets(value)
+
+
+def _layers_before_stack(node):
+    """The layers before the interaction stack, in the list of layers that holds it."""
+    if isinstance(node, dict):
+        for value in node.values():
+            yield from _layers_before_stack(value)
+    elif isinstance(node, list):
+        names = [str(v.get("_target_", "")).rsplit(".", 1)[-1] if isinstance(v, dict) else "" for v in node]
+        for i, name in enumerate(names):
+            if name in SPECIES_ARGUMENT:
+                yield from node[:i]
+        for value in node:
+            yield from _layers_before_stack(value)
+
+
+def _default(value):
+    """The default of a ``${oc.select:key,default}`` interpolation, or the value itself."""
+    text = str(value)
+    return float(text.rsplit(",", 1)[1].rstrip("}")) if text.startswith("${oc.select:") else float(text)
+
+
+SECOND_ORDER_CONFIGS = [
+    p for p in OURS if p.stem not in WITHOUT_PRODUCT
+    and any(t.startswith("e3response.") and t.rsplit(".", 1)[-1] in SECOND_ORDER
+            for t, _ in _targets(yaml.safe_load(p.read_text())))
+]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [pytest.param(p, marks=pytest.mark.xfail(strict=True, reason="field only a MACE global attribute: ε⊗ε input pending"))
+     if p.stem in MACE_GLOBAL_FIELD else p for p in SECOND_ORDER_CONFIGS],
+    ids=[p.stem for p in SECOND_ORDER_CONFIGS],
+)
+def test_second_field_derivatives_have_the_field_product(path):
+    """Every model that differentiates the energy twice in a field has the product of that field among its inputs,
+    on by default and before the interaction stack: ε⊗ε for χ and Raman, μ⊗B for σ, B⊗B for the magnetic χ.
+
+    The BTO and allegro-pol Sobolev configs had no ε⊗ε until 2026-11-10 (only the dielectric-only one, off by default).
+    """
+    config = yaml.safe_load(path.read_text())
+    names = {t.rsplit(".", 1)[-1] for t, _ in _targets(config)}
+    if "MagneticShieldingTensor" in names and "InducedMagneticField" not in names:
+        names.discard("MagneticShieldingTensor")  # deriv1st: σ is the first derivative of a B_ind readout
+    needed = {SECOND_ORDER[n] for n in names if n in SECOND_ORDER}
+    before = [layer for layer in _layers_before_stack(config) if isinstance(layer, dict)]
+    for module in needed:
+        found = [layer for layer in before if str(layer.get("_target_", "")).endswith("." + module)]
+        assert found, f"{path.name}: second field derivative without {module} before the interaction stack"
+        assert all(_default(layer.get("scale", 1.0)) != 0 for layer in found), f"{path.name}: {module} off by default"
+    if "MagneticSusceptibility" in names:
+        assert any(layer.get("field_squared") is True for layer in before
+                   if str(layer.get("_target_", "")).endswith(".NodewiseFieldProduct")), (
+            f"{path.name}: magnetic susceptibility without B⊗B (field_squared: True)"
+        )

@@ -1,9 +1,9 @@
 # BTO Sobolev model trained on the dielectric tensor alone: nequip_bto_sobolev.yaml with only the chain
 # E -> d -> χ, without the Born and Raman chains (which the full model computes even at zero loss weight).
-# With eps2_scale > 0, NodewiseFieldSquare appends |ε|² (0e) and the symmetric traceless part of ε⊗ε (2e) to
-# the node attributes, an explicit quadratic path in the field for χ = ∂²E/∂ε², as field_squared does for B in
-# the NMR models.  The default 0 leaves only the indirect curvature of nequip_bto_sobolev.yaml (the block is
-# then zero).
+# NodewiseFieldSquare appends |ε|² (0e) and the symmetric traceless part of ε⊗ε (2e) to the node attributes, an
+# explicit quadratic path in the field for χ = ∂²E/∂ε², as field_squared does for B in the NMR models; on by
+# default since 2026-11-10 (eps2_scale 1, as every Sobolev config).  eps2_scale=0 leaves only the indirect
+# curvature (the block is then zero), as the v2 runs without the _eps2 suffix.
 
 _target_: tensorial.ReaxModule
 
@@ -70,7 +70,7 @@ model:
           normalise: False
 
     - _target_: e3response.nodewise_product.NodewiseFieldSquare
-      scale: ${oc.select:eps2_scale,0.}
+      scale: ${oc.select:eps2_scale,1.}
 
     - _target_: tensorial.gcnn.EdgeVectors
 

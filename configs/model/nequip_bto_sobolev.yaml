@@ -89,6 +89,13 @@ model:
           irreps: 0e + 1o
           normalise: False
 
+    # |ε|² (0e) and the symmetric traceless part of ε⊗ε (2e) appended to the node attributes: an explicit
+    # quadratic path in the field for the second field derivatives (χ = ∂²E/∂ε², Raman), as μ⊗B and B⊗B in the
+    # NMR models.  The block and its first derivative vanish at ε = 0, so E, forces, dipole and Born charges
+    # are unchanged.  eps2_scale=0 switches it off (all runs before 2026-11-10 ran without it).
+    - _target_: e3response.nodewise_product.NodewiseFieldSquare
+      scale: ${oc.select:eps2_scale,1.}
+
     - _target_: tensorial.gcnn.EdgeVectors
 
     - _target_: tensorial.gcnn.EdgewiseEncoding

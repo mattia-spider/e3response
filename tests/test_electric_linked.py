@@ -153,6 +153,29 @@ def test_linked_branches(field):
     _check(out, expected, expected)
 
 
+@pytest.mark.parametrize("seed", [0, 1])
+def test_per_graph_field(seed):
+    """A per-graph (n_graph, 3) field, as the data carries it: every graph is differentiated at its
+    own field, with the values a batch-shared field equal to that graph's would give."""
+    fields = jax.random.normal(jax.random.PRNGKey(10 + seed), (len(N_NODE), 3))
+    graph = _batch(seed)
+    graph = graph._replace(globals={**graph.globals, FIELD: fields})
+    L = lambda name: functools.partial(getattr(electric_linked, name))
+    branches = functools.partial(
+        electric_linked.LinkedBranches,
+        branches=((L("Polarization"), L("DielectricTensor")), (L("Forces"), L("BornCharges"), L("RamanTensors"))),
+    )
+    out = _apply(tensorial_nn.Sequential([ToyEnergy(), branches]), graph)
+    starts = np.concatenate([[0], np.cumsum(N_NODE)])
+    for g, field in enumerate(fields):
+        expected = _expected(graph, field)  # every graph at this graph's field: keep row / atoms of g
+        atoms = slice(starts[g], starts[g + 1])
+        for key, value in expected.items():
+            got = out.nodes[key][atoms] if key in out.nodes else out.globals[key][g]
+            want = value[atoms] if key in out.nodes else value[g]
+            np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-5, err_msg=f"{key}, graph {g}")
+
+
 def test_species_polarizability_adds_only_to_chi():
     """-½ Σ α_Z |ε|² adds Σ α_Z I to χ and leaves the Born charges and Raman tensors unchanged."""
     graph = _graph(0, [0.3, -0.2, 0.5])

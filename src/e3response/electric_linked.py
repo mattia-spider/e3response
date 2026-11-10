@@ -34,9 +34,10 @@ A chain may start from any module in the order above; e.g. for Born and Raman la
     - _target_: e3response.electric_linked.RamanTensors
       _partial_: True
 
-The field is one (3,) vector for the whole batch, which a node encoding broadcasts to every atom,
-so the field derivatives cost 3 JVPs whatever the batch size.  A per-graph (n_graph, 3) field in the
-data is accepted only if every graph carries the same one, and its first row is used.
+The field derivatives are taken in one (3,) vector for the whole batch, which a node encoding
+broadcasts to every atom, so they cost 3 JVPs whatever the batch size.  A per-graph (n_graph, 3)
+field in the data is kept: each graph's energy is evaluated at its own field plus that shared
+offset, taken at zero (see :func:`_split_field`).
 """
 
 import math
@@ -67,6 +68,41 @@ __all__ = (
     "Scale",
     "SpeciesPolarizability",
 )
+
+
+_BASE = "_base"  # suffix of the key under which _split_field sets a per-graph field aside
+
+
+def _split_field(graph: jraph.GraphsTuple, field_key: str) -> tuple[jraph.GraphsTuple, jax.Array]:
+    """The graph a link differentiates and the field value at which it does.
+
+    A (3,) field, shared by the batch (inserted by a link further out), is the value itself; with no
+    field the value is zero.  A per-graph (n_graph, 3) field, as the data carries it, is set aside
+    under ``<field_key>_base`` and the derivative is taken in a shared offset δ at zero, which
+    :func:`_offset_field` adds back: each graph's energy depends only on its own field, so
+    ∂E_g/∂δ = ∂E_g/∂ε_g at every graph's own field.
+    """
+    if field_key not in graph.globals:
+        return graph, jnp.zeros(3)
+    field = jnp.asarray(graph.globals[field_key])
+    if field.ndim == 1:
+        return graph, field
+    return graph._replace(globals={**graph.globals, field_key + _BASE: field}), jnp.zeros(3)
+
+
+def _offset_field(fn: gcnn.GraphFunction, field_key: str) -> gcnn.GraphFunction:
+    """``fn`` evaluated at the per-graph field set aside by :func:`_split_field` plus the offset in
+    ``globals.<field_key>``; unchanged when nothing was set aside."""
+
+    def at_offset(graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
+        if field_key + _BASE not in graph.globals:
+            return fn(graph)
+        globals_ = dict(graph.globals)
+        globals_[field_key] = globals_.pop(field_key + _BASE) + globals_[field_key]
+        return fn(graph._replace(globals=globals_))
+
+    return at_offset
+
 
 
 def _field_at(graph: jraph.GraphsTuple, field_key: str) -> jax.Array:
@@ -158,7 +194,7 @@ class BornCharges(linen.Module):
     def setup(self) -> None:
         # pylint: disable=attribute-defined-outside-init
         self._diff = gcnn.diff(
-            self.forces_fn,
+            _offset_field(self.forces_fn, self.electric_field_key),
             f"nodes.{self.forces_key}:Iγ",
             wrt=[f"globals.{self.electric_field_key}:α"],
             out=":Iαγ",
@@ -167,7 +203,7 @@ class BornCharges(linen.Module):
         )
 
     def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
-        born, graph = self._diff(graph, _field_at(graph, self.electric_field_key))
+        born, graph = self._diff(*_split_field(graph, self.electric_field_key))
         return gcnn.experimental.update_graph(graph).set(("nodes", self.out_key), born).get()
 
 
@@ -194,7 +230,7 @@ class RamanTensors(linen.Module):
     def setup(self) -> None:
         # pylint: disable=attribute-defined-outside-init
         self._diff = gcnn.diff(
-            self.born_charges_fn,
+            _offset_field(self.born_charges_fn, self.electric_field_key),
             f"nodes.{self.born_charges_key}:Iαγ",
             wrt=[f"globals.{self.electric_field_key}:β"],
             out=":Iγαβ",
@@ -203,7 +239,7 @@ class RamanTensors(linen.Module):
         )
 
     def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
-        raman, graph = self._diff(graph, _field_at(graph, self.electric_field_key))
+        raman, graph = self._diff(*_split_field(graph, self.electric_field_key))
         if self.per_volume:
             raman = _per_volume_nodes(graph, raman)
         return gcnn.experimental.update_graph(graph).set(("nodes", self.out_key), raman).get()
@@ -226,7 +262,7 @@ class Polarization(linen.Module):
     def setup(self) -> None:
         # pylint: disable=attribute-defined-outside-init
         self._diff = gcnn.diff(
-            self.energy_fn,
+            _offset_field(self.energy_fn, self.electric_field_key),
             f"globals.{self.energy_key}:gk",
             wrt=[f"globals.{self.electric_field_key}:α"],
             out=":gα",
@@ -235,7 +271,7 @@ class Polarization(linen.Module):
         )
 
     def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
-        derivative, graph = self._diff(graph, _field_at(graph, self.electric_field_key))
+        derivative, graph = self._diff(*_split_field(graph, self.electric_field_key))
         dipole = -derivative
         return (
             gcnn.experimental.update_graph(graph)
@@ -265,7 +301,7 @@ class DielectricTensor(linen.Module):
     def setup(self) -> None:
         # pylint: disable=attribute-defined-outside-init
         self._diff = gcnn.diff(
-            self.dipole_fn,
+            _offset_field(self.dipole_fn, self.electric_field_key),
             f"globals.{self.dipole_key}:gα",
             wrt=[f"globals.{self.electric_field_key}:β"],
             out=":gαβ",
@@ -274,7 +310,7 @@ class DielectricTensor(linen.Module):
         )
 
     def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
-        susceptibility, graph = self._diff(graph, _field_at(graph, self.electric_field_key))
+        susceptibility, graph = self._diff(*_split_field(graph, self.electric_field_key))
         dielectric = _per_volume(graph, susceptibility / self.epsilon_0)
         if self.include_identity:
             dielectric = jnp.eye(3) + dielectric

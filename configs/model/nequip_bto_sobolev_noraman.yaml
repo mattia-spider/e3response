@@ -1,0 +1,166 @@
+# BTO Sobolev model trained on Born charges and dielectric tensor (the noRaman ablation):
+# nequip_bto_sobolev.yaml without the Raman tensors.  The full model computes the Raman tensors (a third
+# derivative, the costliest output) even at zero loss weight, as the v2 noRaman runs did (++w_raman=0); this one
+# leaves them out.  Same energy network, Born charges and dielectric tensor as nequip_bto_sobolev.yaml, and the same
+# parameter names, so a checkpoint loads in either.
+
+_target_: tensorial.ReaxModule
+
+optimizer:
+  _target_: optax.chain
+  _args_:
+    # Same schedule as the NMR models (see nequip_nmr.yaml): Adam, then reduce_on_plateau
+    # halving the step after 20 epochs without a better training loss
+    - _target_: optax.adam
+      learning_rate: 0.01
+
+    - _target_: optax.contrib.reduce_on_plateau
+      factor: 0.5
+      accumulation_size: ${from_data.steps_per_epoch}
+      patience: 20
+      rtol: 0.0001
+      # Relative criterion only: the weighted BTO losses are ~0.07, where the NMR models' atol
+      # of 0.001 asks for a 1.5% gain per epoch and halves the step down to 1/4096 by epoch ~400
+      atol: 0.0
+      cooldown: 5
+      min_scale: 1.0e-6
+
+metrics:
+  BEC:
+    _target_: tensorial.gcnn.graph_metric
+    metric: rmse
+    predictions: nodes.predicted_born_charges
+    targets: nodes.born_charges
+  dielectric:
+    _target_: tensorial.gcnn.graph_metric
+    metric: rmse
+    predictions: globals.predicted_dielectric_tensor
+    targets: globals.dielectric_tensor
+
+loss_fn:
+  _target_: tensorial.gcnn.WeightedLoss
+  weights:
+    - ${oc.select:w_born,1000.}
+    - ${oc.select:w_dielectric,100.}
+  loss_fns:
+    - _target_: tensorial.gcnn.Loss
+      loss_fn: squared_error
+      predictions: nodes.predicted_born_charges
+      targets: nodes.born_charges
+
+    - _target_: tensorial.gcnn.Loss
+      loss_fn: squared_error
+      predictions: globals.predicted_dielectric_tensor
+      targets: globals.dielectric_tensor
+
+model:
+  _target_: tensorial.nn.Sequential
+  layers:
+    - _target_: tensorial.gcnn.atomic.SpeciesTransform
+      atomic_numbers: ${from_data.atomic_numbers}
+
+    # Units of field and energy: the field is multiplied by c here and the energy by 1/c
+    # below.  Neither has a label, so this changes no prediction's meaning, only the scales a
+    # fresh network starts from: Born charges O(1), χ and R O(c), as BTO needs (see
+    # e3response.electric_linked.Scale).
+    - _target_: e3response.electric_linked.Scale
+      field: globals.external_electric_field
+      factor: ${oc.select:field_scale,100.}
+
+    - _target_: tensorial.gcnn.NodewiseEmbedding
+      attrs:
+        species:
+          _target_: tensorial.tensors.OneHot
+          num_classes: ${from_data.n_elements}
+        # Not normalised: the chain differentiates with respect to this field at zero, and a
+        # normalised field only carries its direction, which has no derivative there
+        globals.external_electric_field:
+          _target_: tensorial.tensors.SphericalHarmonic
+          irreps: 0e + 1o
+          normalise: False
+
+    # |ε|² (0e) and the symmetric traceless part of ε⊗ε (2e) appended to the node attributes: an explicit
+    # quadratic path in the field for the second field derivative χ = ∂²E/∂ε², as μ⊗B and B⊗B in the
+    # NMR models.  The block and its first derivative vanish at ε = 0, so E, forces, dipole and Born charges
+    # are unchanged.  eps2_scale=0 switches it off (all runs before 2026-11-10 ran without it).
+    - _target_: e3response.nodewise_product.NodewiseFieldSquare
+      scale: ${oc.select:eps2_scale,1.}
+
+    - _target_: tensorial.gcnn.EdgeVectors
+
+    - _target_: tensorial.gcnn.EdgewiseEncoding
+      attrs:
+        edge_vectors:
+          _target_: tensorial.tensors.SphericalHarmonic
+          irreps:
+            _target_: tensorial.make_irreps
+            mul: 1
+            ell_max: ${oc.select:ell_max,2}
+            parity: sh
+          normalise: True
+
+    - _target_: tensorial.gcnn.RadialBasisEdgeEncoding
+      r_max: ${r_max}
+
+    # Hidden irreps: `mul` channels of every irrep up to `ell_max`, see
+    # tensorial.make_irreps.  Override per run, e.g. `mul=16 ell_max=3 num_layers=4`.
+    # Keep only scalars and reduce the number passing this point
+    - _target_: tensorial.gcnn.NodewiseLinear
+      field: attributes
+      irreps_out:
+        _target_: tensorial.make_irreps
+        mul: ${oc.select:mul,16}
+        ell_max: ${oc.select:ell_max,2}
+
+    - _target_: tensorial.gcnn.Nequip
+      hidden_irreps:
+        _target_: tensorial.make_irreps
+        mul: ${oc.select:mul,16}
+        ell_max: ${oc.select:ell_max,2}
+      num_layers: ${oc.select:num_layers,3}
+      # one self-connection matrix per element; without it every species shares one (the default is 1, and
+      # jit clamps the species index silently)
+      num_species: ${from_data.n_elements}
+      avg_num_neighbours: ${from_data.avg_num_neighbours}
+
+    # No NodewiseLinear bottleneck here: the readouts below read the whole stack, as in the NMR models
+
+    - _target_: tensorial.gcnn.NodewiseLinear
+      irreps_out: 1x0e
+      out_field: predicted_energy # Per-atom energy
+
+    # Final total energy
+    - _target_: tensorial.gcnn.NodewiseReduce
+      field: predicted_energy
+      out_field: predicted_energy  # Total energy
+      as_array: True               # Convert IrrepsArray to array
+
+    # Geometry-independent polarizability per species, -½ Σ α_Z |ε|²: carries the bulk of χ,
+    # which the network then only corrects (cf. a direct readout's per-species constants)
+    - _target_: e3response.electric_linked.SpeciesPolarizability
+      num_species: ${from_data.n_elements}
+
+    - _target_: e3response.electric_linked.Scale
+      field: globals.predicted_energy
+      factor: ${oc.select:field_scale,100.}
+      invert: True
+
+    #      # Polarization
+    #      -  _target_: e3response.electric.Polarization
+    #         _partial_: True
+
+    # The two chains of nequip_bto_sobolev.yaml without the last link R = dZ*/dε:
+    #   E --(-d/dε)--> d --(d/dε)--> χ                ε_r = I + 4π χ / Ω
+    #   E --(-d/du)--> F --(d/dε)--> Z*
+    # side by side inside LinkedBranches, as in the full model, so the parameters have the same names.
+    - _target_: e3response.electric_linked.LinkedBranches
+      _partial_: True
+      branches:
+        - - _target_: e3response.electric_linked.Polarization
+            _partial_: True
+          - _target_: e3response.electric_linked.DielectricTensor
+            _partial_: True
+        - - _target_: e3response.electric_linked.Forces
+            _partial_: True
+          - _target_: e3response.electric_linked.BornCharges
+            _partial_: True

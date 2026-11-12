@@ -98,6 +98,7 @@ def test_readouts_read_the_whole_stack(path):
 SECOND_ORDER = {
     "DielectricTensor": "NodewiseFieldSquare",  # χ = ∂²E/∂ε²
     "RamanTensors": "NodewiseFieldSquare",  # ∂³E/∂ε²∂u
+    "FusedFieldChain": "NodewiseFieldSquare",  # χ and Raman from one evaluation
     "RamanTensorsFromPolarizability": "NodewiseFieldSquare",
     "MagneticShieldingTensor": "NodewiseFieldProduct",  # σ = ∂²E/∂μ∂B, when the energy is the root (InducedMagneticField)
     "MagneticSusceptibility": "NodewiseFieldProduct",  # χ = -∂²E/∂B², needs field_squared

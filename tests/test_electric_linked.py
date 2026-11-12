@@ -28,7 +28,8 @@ from tensorial import nn as tensorial_nn
 
 from e3response import electric_linked, keys
 from e3response.electric_linked import predicted
-from test_electric import A, C, CHI0, FIELD, N_NODE, R0, Z0, ToyEnergy, _apply, _batch, _per_graph_sum
+import jax.experimental
+from test_electric import ENERGY, A, C, CHI0, FIELD, N_NODE, R0, Z0, ToyEnergy, _apply, _batch, _per_graph_sum
 
 FULL_CHAIN = ("Polarization", "DielectricTensor", "Forces", "BornCharges", "RamanTensors")
 
@@ -177,3 +178,70 @@ def test_species_polarizability_adds_only_to_chi():
     np.testing.assert_allclose(out.globals[predicted(keys.DIELECTRIC_TENSOR)],
                                expected[predicted(keys.DIELECTRIC_TENSOR)] + extra, rtol=1e-5, atol=1e-5)
     _check(out, expected, [predicted(keys.BORN_CHARGES), predicted(keys.RAMAN_TENSORS)])
+
+
+@pytest.mark.parametrize("field", [None, [0.3, -0.2, 0.5]])
+def test_fused_field_chain(field):
+    """One evaluation gives every quantity of the two branches."""
+    graph = _graph(1, field)
+    out = _apply(tensorial_nn.Sequential([ToyEnergy(), functools.partial(electric_linked.FusedFieldChain)]), graph)
+    expected = _expected(graph, field)
+    _check(out, expected, expected)
+
+
+class _NonlinearEnergy(linen.Module):
+    """A trainable energy, non-polynomial in u and ε, so that the fused and branched chains are compared on
+    parameter gradients that every link contributes to."""
+
+    @linen.compact
+    def __call__(self, graph):
+        u = graph.nodes[keys.POSITIONS]
+        field = graph.globals[FIELD]
+        eps = jnp.broadcast_to(field if field.ndim == 1 else field[0], u.shape)
+        h = jnp.concatenate([u, eps, u * eps, jnp.sum(eps * eps, -1, keepdims=True)], axis=-1)
+        h = jnp.tanh(linen.Dense(16, param_dtype=u.dtype)(h))
+        h = jnp.tanh(linen.Dense(16, param_dtype=u.dtype)(h))
+        e = linen.Dense(1, param_dtype=u.dtype)(h)[:, 0]
+        energy = jax.ops.segment_sum(e, jnp.repeat(jnp.arange(len(N_NODE)), N_NODE, total_repeat_length=len(u)),
+                                     len(N_NODE))[:, None]
+        return graph._replace(globals={**graph.globals, ENERGY: energy})
+
+
+@pytest.mark.parametrize("field", [None, [0.3, -0.2, 0.5]])
+def test_fused_equals_linked_branches_float64(field):
+    """FusedFieldChain against LinkedBranches on a trainable energy, in float64: same parameter tree, same
+    outputs, same loss and same parameter gradients to rounding."""
+    L = lambda name: functools.partial(getattr(electric_linked, name))
+    branched = functools.partial(
+        electric_linked.LinkedBranches,
+        branches=((L("Polarization"), L("DielectricTensor")), (L("Forces"), L("BornCharges"), L("RamanTensors"))),
+    )
+    keys_out = [predicted(k) for k in (keys.DIPOLE_MOMENT, keys.POLARIZABILITY, keys.DIELECTRIC_TENSOR,
+                                       keys.BORN_CHARGES, keys.RAMAN_TENSORS)] + ["predicted_forces"]
+    with jax.experimental.enable_x64():
+        graph = _graph(2, field)
+        graph = jax.tree.map(lambda x: x.astype(jnp.float64) if jnp.issubdtype(x.dtype, jnp.floating) else x, graph)
+        models = [tensorial_nn.Sequential([_NonlinearEnergy(), m])
+                  for m in (branched, functools.partial(electric_linked.FusedFieldChain))]
+        params = [m.init(jax.random.PRNGKey(0), graph) for m in models]
+        assert jax.tree.structure(params[0]) == jax.tree.structure(params[1])
+        for a, b in zip(jax.tree.leaves(params[0]), jax.tree.leaves(params[1])):
+            np.testing.assert_array_equal(a, b)
+        targets = {k: jax.random.normal(jax.random.PRNGKey(i), v.shape, jnp.float64)
+                   for i, (k, v) in enumerate(_outputs(models[0].apply(params[0], graph), keys_out).items())}
+
+        def loss(p, m):
+            out = _outputs(m.apply(p, graph), keys_out)
+            return sum(jnp.sum((out[k] - targets[k]) ** 2) for k in targets)
+
+        outs = [_outputs(m.apply(params[0], graph), keys_out) for m in models]
+        for k in keys_out:
+            np.testing.assert_allclose(outs[1][k], outs[0][k], rtol=1e-12, atol=1e-12, err_msg=k)
+        (l0, g0), (l1, g1) = (jax.value_and_grad(loss)(params[0], m) for m in models)
+        np.testing.assert_allclose(l1, l0, rtol=1e-12)
+        for a, b in zip(jax.tree.leaves(g0), jax.tree.leaves(g1)):
+            np.testing.assert_allclose(b, a, rtol=1e-10, atol=1e-12)
+
+
+def _outputs(graph, names):
+    return {k: jnp.asarray(graph.nodes[k] if k in graph.nodes else graph.globals[k]) for k in names}

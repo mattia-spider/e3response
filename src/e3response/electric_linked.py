@@ -531,6 +531,15 @@ class FusedFieldChain(linen.Module):
     the network twice: the dielectric chain is not run at all, so the training step is ~25% cheaper
     (BTO, 135 atoms; tests/test_electric_linked.py checks the equivalence in float64).  Born charges
     and Raman tensors as :class:`BornCharges` and :class:`RamanTensors` (``per_volume=False``).
+
+    ``raman=False`` stops the forces chain at the Born charges, for the models without Raman labels
+    (allegro-pol, the synthetic set): the second field derivative is taken of the energy's tangent
+    only, so it runs through the network's forward pass and not through the reverse pass in the
+    positions, which the Raman tensors would need.  The values are those of the
+    :class:`LinkedBranches` of (Polarization, DielectricTensor) and (Forces, BornCharges).
+
+    A per-graph field, as the data carries it, is differentiated in a shared offset as in the
+    branched chains (:func:`_split_field`): every graph at its own field.
     """
 
     energy_fn: gcnn.GraphFunction
@@ -543,6 +552,7 @@ class FusedFieldChain(linen.Module):
     dielectric_key: str = predicted(keys.DIELECTRIC_TENSOR)
     born_key: str = predicted(keys.BORN_CHARGES)
     raman_key: str = predicted(keys.RAMAN_TENSORS)
+    raman: bool = True
     epsilon_0 = 1.0 / (4.0 * math.pi)
 
     def setup(self) -> None:
@@ -552,34 +562,38 @@ class FusedFieldChain(linen.Module):
 
     def __call__(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
         graph = _with_field(graph, self.electric_field_key)
-        field = _field_at(graph, self.electric_field_key)
+        graph, field = _split_field(graph, self.electric_field_key)
+        forces_fn = _offset_field(self._forces, self.electric_field_key)
 
         def values(eps):
             g = gcnn.experimental.update_graph(graph).set(("globals", self.electric_field_key), eps).get()
-            out = self._forces(g)
+            out = forces_fn(g)
             energy = jnp.asarray(out.globals[self.energy_key])
             energy = energy.reshape(energy.shape[0], -1).sum(-1)  # (n_graph,)
             forces = jnp.asarray(out.nodes[self.forces_key])
-            return (energy, forces), ((energy, forces), out)
+            return (energy, forces), out
 
         def first(eps):
-            jac, aux = jax.jacfwd(values, has_aux=True)(eps)
-            return jac, (jac, aux)
+            (dE, dF), out = jax.jacfwd(values, has_aux=True)(eps)
+            # Without Raman only the energy's tangent is differentiated again: the forces' second
+            # tangent, the one through the reverse pass, is never formed
+            return ((dE, dF) if self.raman else dE), (dE, dF, out)
 
-        hess, (jac, (_, out)) = jax.jacfwd(first, has_aux=True)(field)
-        (dE, dF), (d2E, d2F) = jac, hess  # dE (g,α), dF (I,γ,α), d2E (g,α,β), d2F (I,γ,α,β)
+        hess, (dE, dF, out) = jax.jacfwd(first, has_aux=True)(field)
+        # dE (g,α), dF (I,γ,α), d2E (g,α,β), d2F (I,γ,α,β)
+        d2E, d2F = hess if self.raman else (hess, None)
         dipole = -dE
         chi = -d2E
         dielectric = jnp.eye(3) + _per_volume(graph, chi / self.epsilon_0)
         born = jnp.swapaxes(dF, 1, 2)  # Z*_{iαγ} = ∂F_iγ/∂ε_α
-        raman = d2F  # R_{iγαβ} = ∂Z*_{iαγ}/∂ε_β
-        return (
+        update = (
             gcnn.experimental.update_graph(out)
             .set(("globals", self.dipole_key), dipole)
             .set(("globals", self.polarization_key), _per_volume(graph, dipole))
             .set(("globals", self.polarizability_key), chi)
             .set(("globals", self.dielectric_key), dielectric)
             .set(("nodes", self.born_key), born)
-            .set(("nodes", self.raman_key), raman)
-            .get()
         )
+        if self.raman:
+            update = update.set(("nodes", self.raman_key), d2F)  # R_{iγαβ} = ∂Z*_{iαγ}/∂ε_β
+        return update.get()

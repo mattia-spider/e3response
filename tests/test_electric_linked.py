@@ -153,24 +153,32 @@ def test_linked_branches(field):
     _check(out, expected, expected)
 
 
+@pytest.mark.parametrize("chain", ["branches", "fused", "fused_to_born"])
 @pytest.mark.parametrize("seed", [0, 1])
-def test_per_graph_field(seed):
+def test_per_graph_field(seed, chain):
     """A per-graph (n_graph, 3) field, as the data carries it: every graph is differentiated at its
     own field, with the values a batch-shared field equal to that graph's would give."""
     fields = jax.random.normal(jax.random.PRNGKey(10 + seed), (len(N_NODE), 3))
     graph = _batch(seed)
     graph = graph._replace(globals={**graph.globals, FIELD: fields})
     L = lambda name: functools.partial(getattr(electric_linked, name))
-    branches = functools.partial(
-        electric_linked.LinkedBranches,
-        branches=((L("Polarization"), L("DielectricTensor")), (L("Forces"), L("BornCharges"), L("RamanTensors"))),
-    )
-    out = _apply(tensorial_nn.Sequential([ToyEnergy(), branches]), graph)
+    module = {
+        "branches": functools.partial(
+            electric_linked.LinkedBranches,
+            branches=((L("Polarization"), L("DielectricTensor")), (L("Forces"), L("BornCharges"), L("RamanTensors"))),
+        ),
+        "fused": functools.partial(electric_linked.FusedFieldChain),
+        "fused_to_born": functools.partial(electric_linked.FusedFieldChain, raman=False),
+    }[chain]
+    out = _apply(tensorial_nn.Sequential([ToyEnergy(), module]), graph)
     starts = np.concatenate([[0], np.cumsum(N_NODE)])
     for g, field in enumerate(fields):
         expected = _expected(graph, field)  # every graph at this graph's field: keep row / atoms of g
         atoms = slice(starts[g], starts[g + 1])
         for key, value in expected.items():
+            if key == predicted(keys.RAMAN_TENSORS) and chain == "fused_to_born":
+                assert key not in out.nodes
+                continue
             got = out.nodes[key][atoms] if key in out.nodes else out.globals[key][g]
             want = value[atoms] if key in out.nodes else value[g]
             np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-5, err_msg=f"{key}, graph {g}")
@@ -220,7 +228,8 @@ class _NonlinearEnergy(linen.Module):
     def __call__(self, graph):
         u = graph.nodes[keys.POSITIONS]
         field = graph.globals[FIELD]
-        eps = jnp.broadcast_to(field if field.ndim == 1 else field[0], u.shape)
+        graph_of = jnp.repeat(jnp.arange(len(N_NODE)), N_NODE, total_repeat_length=len(u))
+        eps = jnp.broadcast_to(field, u.shape) if field.ndim == 1 else field[graph_of]  # each atom its graph's field
         h = jnp.concatenate([u, eps, u * eps, jnp.sum(eps * eps, -1, keepdims=True)], axis=-1)
         h = jnp.tanh(linen.Dense(16, param_dtype=u.dtype)(h))
         h = jnp.tanh(linen.Dense(16, param_dtype=u.dtype)(h))
@@ -230,22 +239,29 @@ class _NonlinearEnergy(linen.Module):
         return graph._replace(globals={**graph.globals, ENERGY: energy})
 
 
-@pytest.mark.parametrize("field", [None, [0.3, -0.2, 0.5]])
-def test_fused_equals_linked_branches_float64(field):
+@pytest.mark.parametrize("raman", [True, False])
+@pytest.mark.parametrize("field", [None, [0.3, -0.2, 0.5], "per_graph"])
+def test_fused_equals_linked_branches_float64(field, raman):
     """FusedFieldChain against LinkedBranches on a trainable energy, in float64: same parameter tree, same
-    outputs, same loss and same parameter gradients to rounding."""
+    outputs, same loss and same parameter gradients to rounding.  raman=False against the branches without
+    RamanTensors (allegro-pol, the synthetic set)."""
     L = lambda name: functools.partial(getattr(electric_linked, name))
+    born_chain = (L("Forces"), L("BornCharges")) + ((L("RamanTensors"),) if raman else ())
     branched = functools.partial(
-        electric_linked.LinkedBranches,
-        branches=((L("Polarization"), L("DielectricTensor")), (L("Forces"), L("BornCharges"), L("RamanTensors"))),
+        electric_linked.LinkedBranches, branches=((L("Polarization"), L("DielectricTensor")), born_chain)
     )
     keys_out = [predicted(k) for k in (keys.DIPOLE_MOMENT, keys.POLARIZABILITY, keys.DIELECTRIC_TENSOR,
-                                       keys.BORN_CHARGES, keys.RAMAN_TENSORS)] + ["predicted_forces"]
+                                       keys.BORN_CHARGES)] + ["predicted_forces"]
+    keys_out += [predicted(keys.RAMAN_TENSORS)] if raman else []
     with jax.experimental.enable_x64():
-        graph = _graph(2, field)
+        if field == "per_graph":
+            graph = _batch(2)
+            graph = graph._replace(globals={**graph.globals, FIELD: jax.random.normal(jax.random.PRNGKey(3), (len(N_NODE), 3))})
+        else:
+            graph = _graph(2, field)
         graph = jax.tree.map(lambda x: x.astype(jnp.float64) if jnp.issubdtype(x.dtype, jnp.floating) else x, graph)
         models = [tensorial_nn.Sequential([_NonlinearEnergy(), m])
-                  for m in (branched, functools.partial(electric_linked.FusedFieldChain))]
+                  for m in (branched, functools.partial(electric_linked.FusedFieldChain, raman=raman))]
         params = [m.init(jax.random.PRNGKey(0), graph) for m in models]
         assert jax.tree.structure(params[0]) == jax.tree.structure(params[1])
         for a, b in zip(jax.tree.leaves(params[0]), jax.tree.leaves(params[1])):

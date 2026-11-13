@@ -73,11 +73,12 @@ def _with_positions(graph, positions):
     return graph._replace(nodes={**graph.nodes, keys.POSITIONS: positions})
 
 
-def test_sobolev_born_charges_are_the_derivative_of_its_dipole():
+@pytest.mark.parametrize("model_name", ["nequip_bto_pol_sobolev", "nequip_bto_pol_sobolev_fused"])
+def test_sobolev_born_charges_are_the_derivative_of_its_dipole(model_name):
     """Through the real pipeline (loader, from_data, config), at the field of each structure: the
     Sobolev model's Born charge Z[i, α, γ] is ∂d_α/∂r_iγ of its own dipole, the index order of the
     stored label (field first, displacement second)."""
-    model, params, batch = _model_and_batch("nequip_bto_pol_sobolev")
+    model, params, batch = _model_and_batch(model_name)
     apply = jax.jit(lambda graph: model.apply(params, graph))
     out = apply(batch)
     born = np.asarray(out.nodes["predicted_born_charges"])
@@ -108,7 +109,7 @@ def test_sobolev_born_charges_are_the_derivative_of_its_dipole():
     assert np.linalg.norm(born[i].T - columns) > 10 * np.linalg.norm(born[i] - columns)
 
 
-@pytest.mark.parametrize("model_name", ["nequip_bto_pol_sobolev", "nequip_bto_pol_direct"])
+@pytest.mark.parametrize("model_name", ["nequip_bto_pol_sobolev", "nequip_bto_pol_sobolev_fused", "nequip_bto_pol_direct"])
 def test_each_structure_sees_its_own_field(model_name):
     """In a batch of molecules at different fields, molecule g gets the prediction it gets when every
     molecule of the batch is at its field: the field is per structure (the Sobolev chain used to
@@ -129,3 +130,21 @@ def test_each_structure_sees_its_own_field(model_name):
         for key in ("predicted_dipole_moment", "predicted_polarizability", "predicted_energy"):
             np.testing.assert_allclose(np.asarray(out.globals[key][g]), np.asarray(shared.globals[key][g]),
                                        rtol=1e-4, atol=1e-5, err_msg=f"{key}, graph {g}")
+
+
+def test_fused_config_equals_the_branched_one():
+    """nequip_bto_pol_sobolev_fused (one evaluation, no Raman) and nequip_bto_pol_sobolev (two LinkedBranches
+    chains): the same parameter tree, so checkpoints load in either, and the same predictions with the same
+    parameters, at the different fields of the batch."""
+    branched, params, batch = _model_and_batch("nequip_bto_pol_sobolev")
+    fused, fused_params, _ = _model_and_batch("nequip_bto_pol_sobolev_fused")
+    assert jax.tree.structure(params) == jax.tree.structure(fused_params)
+    for a, b in zip(jax.tree.leaves(params), jax.tree.leaves(fused_params)):
+        assert a.shape == b.shape
+    out = jax.jit(lambda g: branched.apply(params, g))(batch)
+    out_fused = jax.jit(lambda g: fused.apply(params, g))(batch)
+    for key in ("predicted_energy", "predicted_dipole_moment", "predicted_polarizability"):
+        np.testing.assert_allclose(out_fused.globals[key], out.globals[key], rtol=1e-4, atol=1e-5, err_msg=key)
+    for key in ("predicted_forces", "predicted_born_charges"):
+        np.testing.assert_allclose(out_fused.nodes[key], out.nodes[key], rtol=1e-4, atol=1e-5, err_msg=key)
+    assert "predicted_raman_tensors" not in out_fused.nodes

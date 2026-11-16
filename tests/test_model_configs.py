@@ -99,7 +99,8 @@ SECOND_ORDER = {
     "DielectricTensor": "NodewiseFieldSquare",  # χ = ∂²E/∂ε²
     "RamanTensors": "NodewiseFieldSquare",  # ∂³E/∂ε²∂u
     "FusedFieldChain": "NodewiseFieldSquare",  # χ and Raman from one evaluation
-    "RamanTensorsFromPolarizability": "NodewiseFieldSquare",
+    # RamanTensorsFromPolarizability differentiates χ in the positions only: it needs ε⊗ε through the
+    # DielectricTensor it wraps (nequip_bto_linked_dipole), not when χ is read out (the posderiv configs)
     "MagneticShieldingTensor": "NodewiseFieldProduct",  # σ = ∂²E/∂μ∂B, when the energy is the root (InducedMagneticField)
     "MagneticSusceptibility": "NodewiseFieldProduct",  # χ = -∂²E/∂B², needs field_squared
 }
@@ -176,3 +177,36 @@ def test_second_field_derivatives_have_the_field_product(path):
                    if str(layer.get("_target_", "")).endswith(".NodewiseFieldProduct")), (
             f"{path.name}: magnetic susceptibility without B⊗B (field_squared: True)"
         )
+
+
+# Position-derivative models: Born charges or Raman tensors as the position derivative of a dipole moment or a
+# polarizability read out of the stack with no label, and no field anywhere (2026-11-16)
+POSITION_DERIVATIVE = {"BornChargesFromDipole": ("predicted_dipole_moment", "1x1o"),
+                       "RamanTensorsFromPolarizability": ("predicted_polarizability", "1x0e + 1x2e")}
+POSDERIV = [p for p in OURS if "posderiv" in p.stem]
+
+
+def test_posderiv_configs_exist():
+    assert {p.stem for p in POSDERIV} >= {"nequip_bto_posderiv_bornonly", "nequip_bto_posderiv_ramanonly",
+                                          "nequip_bto_pol_posderiv_bornonly"}
+
+
+@pytest.mark.parametrize("path", POSDERIV, ids=[p.stem for p in POSDERIV])
+def test_posderiv_differentiates_an_unlabelled_readout_in_the_positions_only(path):
+    """The last layer is the position derivative, partial so that it wraps the whole stack; the quantity it
+    differentiates is read out of the stack and enters no loss; no field input and no field derivative."""
+    text = path.read_text()
+    config = yaml.safe_load(text)
+    assert "electric_field" not in text and "NodewiseField" not in text, f"{path.name}: reads a field"
+    layers = config["model"]["layers"]
+    last = layers[-1]
+    name = str(last.get("_target_", "")).rsplit(".", 1)[-1]
+    assert name in POSITION_DERIVATIVE and last.get("_partial_") is True, f"{path.name}: last layer {last!r}"
+    key, irreps = POSITION_DERIVATIVE[name]
+    reduce = [layer for layer in layers if layer.get("out_field") == key]
+    assert len(reduce) == 1 and reduce[0]["_target_"].endswith("NodewiseReduce"), f"{path.name}: no readout of {key}"
+    contribution = [layer for layer in layers if layer.get("out_field") == reduce[0]["field"]
+                    and layer["_target_"].endswith("NodewiseLinear")]
+    assert len(contribution) == 1 and contribution[0]["irreps_out"] == irreps, f"{path.name}: readout irreps"
+    losses = [loss.get("predictions") for loss in config["loss_fn"]["loss_fns"]]
+    assert f"globals.{key}" not in losses and len(losses) == 1, f"{path.name}: losses {losses}"
